@@ -125,6 +125,18 @@ OPEN = datetime.time(9, 30)
 CLOSE = datetime.time(16, 0)
 EARLY = datetime.time(13, 0)
 
+DEFAULT_INDIA_WATCHLIST = [
+    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
+    "BHARTIARTL.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS", "LT.NS",
+    "BAJFINANCE.NS", "MARUTI.NS", "TATAMOTORS.NS", "SUNPHARMA.NS", "KOTAKBANK.NS",
+    "AXISBANK.NS", "TITAN.NS", "WIPRO.NS", "ASIANPAINT.NS", "NTPC.NS"
+]
+
+DEFAULT_CRYPTO_WATCHLIST = [
+    "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD",
+    "DOGE-USD", "ADA-USD", "AVAX-USD", "BTC-INR", "ETH-INR"
+]
+
 SETUPS = [
     ("breakout_20d", "20-day closing-high breakout"),
     ("bull_flag", "bull flag"),
@@ -268,7 +280,10 @@ def yahoo_get(path):
 
 
 def to_yahoo(sym):
-    return sym.upper().replace(".", "-")
+    s = sym.upper()
+    if s.endswith(".NS") or s.endswith(".BO") or s.startswith("^"):
+        return s
+    return s.replace(".", "-")
 
 
 def spark_path(symbols, rng, interval):
@@ -775,6 +790,10 @@ def read_symbols(a, offline_syms=None):
         syms = symbols_from_file(a.watchlist)
     elif offline_syms is not None and not a.universe:
         syms = sorted(offline_syms)  # offline: every chart in the file, unless a list was given
+    elif getattr(a, "market", "us") == "india":
+        syms = DEFAULT_INDIA_WATCHLIST
+    elif getattr(a, "market", "us") == "crypto":
+        syms = DEFAULT_CRYPTO_WATCHLIST
     else:
         path = a.universe or DEFAULT_UNIVERSE
         if not os.path.exists(path):
@@ -839,6 +858,45 @@ def money(x):
 
 def cmd_universe(a):
     t0 = time.time()
+    market = getattr(a, "market", "us")
+    if market == "india":
+        kept = [(s, s.split(".")[0]) for s in DEFAULT_INDIA_WATCHLIST]
+        counts = {"rows": len(kept), "keep": len(kept)}
+        created = "NSE Top Equities Watchlist"
+        dropped = {}
+        if not a.no_write:
+            d = os.path.dirname(a.out)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(a.out, "w", encoding="utf-8") as fh:
+                for sym, name in kept:
+                    fh.write("%s|%s\n" % (sym, name))
+        if a.json:
+            print(json.dumps({"count": len(kept), "rows": counts["rows"], "market": "india", "out": None if a.no_write else a.out}, indent=2))
+        else:
+            print("Indian NSE Universe: %d symbols." % len(kept))
+            if not a.no_write:
+                print("Wrote %s (one SYMBOL|Name a line)." % a.out)
+        return 0
+    elif market == "crypto":
+        kept = [(s, s) for s in DEFAULT_CRYPTO_WATCHLIST]
+        counts = {"rows": len(kept), "keep": len(kept)}
+        created = "Major Cryptocurrency Watchlist"
+        dropped = {}
+        if not a.no_write:
+            d = os.path.dirname(a.out)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(a.out, "w", encoding="utf-8") as fh:
+                for sym, name in kept:
+                    fh.write("%s|%s\n" % (sym, name))
+        if a.json:
+            print(json.dumps({"count": len(kept), "rows": counts["rows"], "market": "crypto", "out": None if a.no_write else a.out}, indent=2))
+        else:
+            print("Cryptocurrency Universe: %d symbols." % len(kept))
+            if not a.no_write:
+                print("Wrote %s (one SYMBOL|Name a line)." % a.out)
+        return 0
     texts = {}
     for k, fname in enumerate(NASDAQ_FILES):
         if a.offline:
@@ -1032,6 +1090,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd")
 
     p = sub.add_parser("universe", help="download Nasdaq Trader's lists -> trader/universe.txt")
+    p.add_argument("--market", choices=["us", "india", "crypto"], default="us", help="target market (us, india, crypto)")
     p.add_argument("--out", default=DEFAULT_UNIVERSE)
     p.add_argument("--offline", metavar="DIR", help="a folder with nasdaqlisted.txt and otherlisted.txt")
     p.add_argument("--no-write", action="store_true")
@@ -1042,6 +1101,7 @@ def main(argv=None):
         g = p.add_mutually_exclusive_group()
         g.add_argument("--symbols", help="comma-separated tickers instead of the universe")
         g.add_argument("--watchlist", metavar="FILE", help="a watchlist.json (hits) or a text file of tickers")
+        p.add_argument("--market", choices=["us", "india", "crypto"], default="us", help="target market (us, india, crypto)")
         p.add_argument("--universe", help="symbol list, one SYMBOL|Name a line (default %s)" % DEFAULT_UNIVERSE)
         p.add_argument("--limit", type=int, help="scan only the first N symbols")
         p.add_argument("--min-price", type=float, default=min_price)

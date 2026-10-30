@@ -501,8 +501,11 @@ def main(argv=None):
         else:
             cik, name = ciks.get(tick.replace("-", "."), (None, None))
         if not cik:
-            print("facts: no SEC CIK for %s (is it a US filer? ETFs and foreign filers "
-                  "may not have XBRL facts)" % tick, file=sys.stderr)
+            if tick.endswith(".NS") or tick.endswith(".BO") or "-" in tick or tick.startswith("^"):
+                print("facts: SEC EDGAR XBRL company facts are for US SEC filers only. %s is non-US or crypto (skipped)" % tick, file=sys.stderr)
+            else:
+                print("facts: no SEC CIK for %s (is it a US filer? ETFs and foreign filers "
+                      "may not have XBRL facts)" % tick, file=sys.stderr)
             failed += 1
             continue
         try:

@@ -1,0 +1,15 @@
+{
+  "name": "day-trader-gemini",
+  "version": "2.0.0",
+  "description": "Deterministic day-trading skill for Indian NSE stocks, cryptocurrency pairs, and US equities with zero mandatory paid APIs, paper-trading guardrails, and deterministic risk management.",
+  "entrypoint": "gemini_interface.py",
+  "tools_file": "gemini_tools.json",
+  "supported_markets": [
+    "india",
+    "crypto",
+    "us"
+  ],
+  "default_currency": "INR",
+  "paper_trading": true,
+  "execution_engine": "run_trader.py"
+}

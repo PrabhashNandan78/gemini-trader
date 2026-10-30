@@ -152,6 +152,87 @@ for the 60 days to October 19 2026, the 10:15 AM opening-range scan, Yahoo's
 TSLA headlines that morning, the House Clerk's 2026 index, real PTR text and
 real XBRL facts. They reproduce every number in the example above.
 
+## Gemini Integration & Multi-Market Expansion
+
+This repository has been adapted into a universal, multi-market trading skill
+supporting Google Gemini, the Indian Stock Market (NSE), and Cryptocurrencies
+alongside US Equities.
+
+### Key Capabilities
+
+1. **Gemini Function Calling Layer (`gemini_interface.py`)**:
+   - Exposes standardized Gemini function schemas: `analyze_symbol`, `scan_market`,
+     `backtest_strategy`, `evaluate_risk`, `paper_trade`, and `get_market_clock`.
+   - Export schemas directly via `python run_trader.py gemini-tools`.
+   - Manifest provided in `gemini-extension.json`.
+   - Records an immutable audit log to `trader/state/audit.jsonl`.
+
+2. **Indian Stock Market (NSE)**:
+   - Full support for NSE equities (`RELIANCE.NS`, `TCS.NS`, `INFY.NS`, `HDFCBANK.NS`)
+     and indices (`^NSEI`).
+   - Exchange-aware session: 09:15 to 15:30 IST (`Asia/Kolkata` timezone), exactly
+     75 5-minute bars per regular day.
+   - NSE official holiday calendar integration.
+   - Default reporting currency in Indian Rupees (`INR` / `₹`).
+   - Graceful bypass of US-only regulatory checks (SEC EDGAR / STOCK Act).
+
+3. **Cryptocurrency Markets**:
+   - 24/7 continuous trading session (`UTC` timezone).
+   - Major pairs supported (`BTC-USD`, `ETH-USD`, `SOL-USD`, `BTC-INR`).
+   - Fractional position sizing support (e.g. 0.0486 BTC) with strict risk bounds.
+
+4. **Master Orchestrator CLI (`run_trader.py`)**:
+   - Unified entry point for scanning, analysis, backtesting, and paper trading
+     from the command line without requiring AI API keys.
+
+### PowerShell & Command Line Usage
+
+Scan watchlists:
+```powershell
+python run_trader.py scan --market india
+python run_trader.py scan --market crypto
+python run_trader.py scan --market us
+```
+
+Multi-step asset analysis:
+```powershell
+python run_trader.py analyze --symbol RELIANCE.NS
+python run_trader.py analyze --symbol BTC-USD
+python run_trader.py analyze --symbol TSLA
+```
+
+Monte Carlo backtesting (Time Machine):
+```powershell
+python run_trader.py backtest --symbol RELIANCE.NS --replays 10000
+python run_trader.py backtest --symbol BTC-USD --replays 10000
+```
+
+Paper trading and risk check:
+```powershell
+python run_trader.py paper-trade --symbol RELIANCE.NS
+python run_trader.py paper-trade --symbol BTC-USD --execute
+```
+
+Market clocks and session checks:
+```powershell
+python run_trader.py clock --symbol RELIANCE.NS
+python run_trader.py clock --symbol BTC-USD
+```
+
+Export Gemini tool definitions:
+```powershell
+python run_trader.py gemini-tools
+```
+
+### Configuration
+
+Copy `config.example.json` to `trader/config.json` to customize watchlists,
+risk ceilings, and currencies:
+- `"default_market"`: `"india"`, `"crypto"`, or `"us"`
+- `"currency"`: `"INR"` or `"USD"`
+- `"max_loss_per_trade_inr"` / `"max_loss_per_trade_usd"`: hard risk caps per trade
+- `"paper"`: `true` (enforces simulation mode; real broker orders require explicit manual confirmation)
+
 ## Fine print
 
 **Not financial advice.** This is software that reads public data and does
@@ -199,6 +280,12 @@ wash sales likely. Nothing here is tax advice.
 ## Files
 
 ```
+engine/             asset_model.py, market_data.py
+run_trader.py       Master CLI orchestrator
+gemini_interface.py Gemini tool calling interface and dispatcher
+gemini_tools.json   Gemini function declarations schema
+gemini-extension.json Gemini/Antigravity extension manifest
+config.example.json Multi-market configuration template
 trader-scanner/     SKILL.md, scan.py
 trader-news/        SKILL.md, news.py
 trader-entry/       SKILL.md, entry.py

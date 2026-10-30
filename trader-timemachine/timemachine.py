@@ -78,6 +78,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+try:
+    from engine.asset_model import parse_symbol, to_local_time, to_utc
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from engine.asset_model import parse_symbol, to_local_time, to_utc
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5          # seconds between requests: be polite to free endpoints
 BACKOFF = 5.0        # seconds to wait once after a 429
@@ -186,8 +192,10 @@ def clock24(minutes):
 # ---------------------------------------------------------------- data
 
 def chart_url(sym, host="query2"):
+    s = sym.upper()
+    ysym = s if (s.endswith(".NS") or s.endswith(".BO") or s.startswith("^")) else s.replace(".", "-")
     return "https://%s.finance.yahoo.com/v8/finance/chart/%s?range=60d&interval=5m" % (
-        host, urllib.parse.quote(sym.upper().replace(".", "-")))
+        host, urllib.parse.quote(ysym))
 
 
 def _sleep(seconds):
@@ -268,13 +276,24 @@ def chart_result(text, sym):
     return res[0]
 
 
-def parse_bars(result, now_utc):
+def parse_bars(result, now_utc, symbol=None):
     """Yahoo chart result -> (meta, bars, dropped). Regular-session 5-min bars only,
     oldest first. Dropped: bars with a missing price, bars off the 5-minute grid
     (the live tick, e.g. 10:49:45), bars not complete yet (now < start + 5 min,
     where now is the earlier of --now and the data's own regularMarketTime), and
-    bars outside 9:30 to 16:00 New York time."""
+    bars outside regular session hours."""
     meta = result.get("meta") or {}
+    sym = symbol or meta.get("symbol") or ""
+    asset = parse_symbol(sym) if sym else None
+    if asset and asset.asset_class in ("equity_in", "index") and asset.exchange == "NSE":
+        open_min = 9 * 60 + 15
+        session_bars = 75
+        to_local = lambda s: to_local_time(asset, s)
+    else:
+        open_min = OPEN_MIN
+        session_bars = SESSION_BARS
+        to_local = to_eastern
+
     stamps = result.get("timestamp") or []
     q = ((result.get("indicators") or {}).get("quote") or [{}])[0] or {}
     cols = [q.get(k) or [] for k in ("open", "high", "low", "close", "volume")]
@@ -294,9 +313,9 @@ def parse_bars(result, now_utc):
             dropped["off_grid"] += 1
             continue
         start = utc_of(ts)
-        local = to_eastern(start)
-        mins = local.hour * 60 + local.minute - OPEN_MIN
-        if mins < 0 or mins >= SESSION_BARS * 5:
+        local = to_local(start)
+        mins = local.hour * 60 + local.minute - open_min
+        if mins < 0 or mins >= session_bars * 5:
             dropped["outside_hours"] += 1
             continue
         if start + datetime.timedelta(seconds=INTERVAL) > as_of:
@@ -315,16 +334,16 @@ def split_sessions(bars):
     return days
 
 
-def full_sessions(days, before):
-    """Full sessions (all 78 bars) strictly before the plan's date, oldest first,
+def full_sessions(days, before, session_bars=SESSION_BARS):
+    """Full sessions strictly before the plan's date, oldest first,
     and the short ones that were left out (half days, gaps)."""
     full, short = [], []
     for d in sorted(days):
         if d >= before:
             continue
         s = days[d]
-        if len(s) == SESSION_BARS:
-            full.append((d, [s[i] for i in range(SESSION_BARS)]))
+        if len(s) == session_bars:
+            full.append((d, [s[i] for i in range(session_bars)]))
         else:
             short.append({"date": d, "bars": len(s)})
     return full, short
@@ -332,11 +351,13 @@ def full_sessions(days, before):
 
 # ---------------------------------------------------------------- the simulation (sim.py)
 
-def build_pool(sessions):
+def build_pool(sessions, session_bars=None):
     """pool[i] = every past session's bar i as (o, h, l, c) / bar i-1's close, in date order."""
-    pool = [[] for _ in range(SESSION_BARS)]
+    if session_bars is None:
+        session_bars = len(sessions[0][1]) if sessions else SESSION_BARS
+    pool = [[] for _ in range(session_bars)]
     for _, D in sessions:
-        for i in range(1, SESSION_BARS):
+        for i in range(1, session_bars):
             pc = D[i - 1]["c"]
             pool[i].append((D[i]["o"] / pc, D[i]["h"] / pc, D[i]["l"] / pc, D[i]["c"] / pc))
     return pool
@@ -684,9 +705,10 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
         raise TMError("--window must be between 0 and 10 bars")
     sym = plan["symbol"]
     result = chart_result(text, sym)
-    meta, bars, dropped = parse_bars(result, now_utc)
+    meta, bars, dropped = parse_bars(result, now_utc, symbol=sym)
     msym = str(meta.get("symbol") or "").upper()
-    if msym and msym != sym.replace(".", "-"):
+    expected_sym = sym if (sym.endswith(".NS") or sym.endswith(".BO") or sym.startswith("^")) else sym.replace(".", "-")
+    if msym and msym != expected_sym and msym != sym:
         raise TMError("the data is for %s but the plan is for %s" % (msym, sym))
     gran = meta.get("dataGranularity")
     if gran and gran != "5m":
@@ -706,25 +728,30 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
                                                                              plan["entry_time"]))
     days = split_sessions(bars)
     entry_day = days.get(plan["date"], {})
+    asset = parse_symbol(sym)
+    is_nse = asset.asset_class in ("equity_in", "index") and asset.exchange == "NSE"
+    session_bars_val = 75 if is_nse else SESSION_BARS
+    open_min_val = (9 * 60 + 15) if is_nse else OPEN_MIN
+
     if k not in entry_day:
         reason = ("no bars for that day" if not entry_day else
                   "the data stops at the %s bar" % entry_day[max(entry_day)]["start"])
         raise TMError("the entry is not in the data: no complete %s bar (closing %s) on %s for %s (%s)"
-                      % (clock24(OPEN_MIN + 5 * k), plan["entry_time"], plan["date"], sym, reason))
+                      % (clock24(open_min_val + 5 * k), plan["entry_time"], plan["date"], sym, reason))
     eb = entry_day[k]
     warn = []
     if not eb["l"] - 0.01 <= plan["entry"] <= eb["h"] + 0.01:
         warn.append("the plan's entry %.2f is outside that bar's range %.2f to %.2f"
                     % (plan["entry"], eb["l"], eb["h"]))
-    sessions, short = full_sessions(days, plan["date"])
+    sessions, short = full_sessions(days, plan["date"], session_bars=session_bars_val)
     if len(sessions) < MIN_SESSIONS:
         raise TMError("only %d full session(s) of %s before %s in the data; the time machine needs at least %d"
                       % (len(sessions), sym, plan["date"], MIN_SESSIONS))
-    pool = build_pool(sessions)
+    pool = build_pool(sessions, session_bars=session_bars_val)
     mc = simulate(pool, plan["entry"], plan["stop"], plan["target"], k, last, replays, seed, window, plan["side"])
     mc = dict(mc, until=clock24(until_min), pool_sessions=len(sessions), pool_from=sessions[0][0],
               pool_to=sessions[-1][0],
-              band_times=[clock24(OPEN_MIN + 5 * (j + 1)) for j in range(k, last + 1)])
+              band_times=[clock24(open_min_val + 5 * (j + 1)) for j in range(k, last + 1)])
     rule = resolve_rule(plan, entry_day)
     plan_out = {kk: v for kk, v in plan.items() if v is not None}
     if rule:

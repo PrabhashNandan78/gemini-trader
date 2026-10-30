@@ -58,6 +58,12 @@ import math
 import os
 import sys
 
+try:
+    from engine.asset_model import parse_symbol, format_currency
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from engine.asset_model import parse_symbol, format_currency
+
 # v2 defaults: the contract's config.example.json. Missing keys fall back to these.
 DEFAULTS = {
     "budget": None,
@@ -272,8 +278,12 @@ def round_cent(x):
     return math.floor(float(x) * 100 + 0.5 + EPS) / 100.0
 
 
-def shares_for(usd, per_share):
-    """Whole shares that fit in usd at per_share, in exact integer cents."""
+def shares_for(usd, per_share, allow_fractional=False):
+    """Whole shares (or fractional units for crypto) that fit in usd at per_share."""
+    if per_share <= 0 or usd <= 0:
+        return 0
+    if allow_fractional:
+        return round(float(usd) / float(per_share), 4)
     u, p = int(round(float(usd) * 100)), int(round(float(per_share) * 100))
     if p <= 0 or u <= 0:
         return 0
@@ -293,11 +303,11 @@ def _num(x):
     return "%.2f" % x
 
 
-def money(x):
+def money(x, sym="$"):
     x = float(x)
     if abs(x - round(x)) < 0.005:
-        return "$" + "{:,.0f}".format(round(x))
-    return "$" + "{:,.2f}".format(x)
+        return sym + "{:,.0f}".format(round(x))
+    return sym + "{:,.2f}".format(x)
 
 
 # ---------------------------------------------------------------- plan mode (the default)
@@ -363,22 +373,26 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         cash_note = "cash %s in trader/portfolio.json minus the %s buffer" % (money(cash), money(cash_buffer))
     available = max(round(available, 2), 0.0)
 
+    asset = parse_symbol(sym)
+    cur_sym = asset.currency_symbol
+    allow_frac = asset.allow_fractional or bool(c.get("fractional"))
+
     limits = []
-    max_loss = _f(c.get("max_loss_per_trade_usd"))
+    max_loss = _f(c.get("max_loss_per_trade_usd")) or _f(c.get("max_loss_per_trade"))
     if max_loss:
-        limits.append({"name": "max loss", "usd": max_loss, "per": risk, "shares": shares_for(max_loss, risk),
-                       "how": "%s max loss / %s risk a share" % (money(max_loss), _price(risk))})
+        limits.append({"name": "max loss", "usd": max_loss, "per": risk, "shares": shares_for(max_loss, risk, allow_frac),
+                       "how": "%s max loss / %s risk a share" % (money(max_loss, cur_sym), _price(risk))})
     cap_pct = _f(c.get("max_position_pct"))
     if cap_pct:
         cap = round(budget * cap_pct / 100.0, 2)
-        limits.append({"name": "position cap", "usd": cap, "per": ref, "shares": shares_for(cap, ref),
-                       "how": "%s%% of %s = %s / %s" % (_num(cap_pct), money(budget), money(cap), _price(ref))})
-    max_order = _f(c.get("max_order_usd"))
+        limits.append({"name": "position cap", "usd": cap, "per": ref, "shares": shares_for(cap, ref, allow_frac),
+                       "how": "%s%% of %s = %s / %s" % (_num(cap_pct), money(budget, cur_sym), money(cap, cur_sym), _price(ref))})
+    max_order = _f(c.get("max_order_usd")) or _f(c.get("max_order"))
     if max_order:
-        limits.append({"name": "max order", "usd": max_order, "per": ref, "shares": shares_for(max_order, ref),
-                       "how": "%s / %s" % (money(max_order), _price(ref))})
-    limits.append({"name": "cash", "usd": available, "per": ref, "shares": shares_for(available, ref),
-                   "how": "%s = %s / %s" % (cash_note, money(available), _price(ref))})
+        limits.append({"name": "max order", "usd": max_order, "per": ref, "shares": shares_for(max_order, ref, allow_frac),
+                       "how": "%s / %s" % (money(max_order, cur_sym), _price(ref))})
+    limits.append({"name": "cash", "usd": available, "per": ref, "shares": shares_for(available, ref, allow_frac),
+                   "how": "%s = %s / %s" % (cash_note, money(available, cur_sym), _price(ref))})
 
     qty = max(0, min(l["shares"] for l in limits))
     bound = [l["name"] for l in limits if l["shares"] == qty]
@@ -419,16 +433,18 @@ def bracket_order(s):
     """The one proposed order, Alpaca place_stock_order fields (strings) plus why and plan."""
     if s["refusal"] or s["qty"] <= 0:
         return None
-    o = {"symbol": s["symbol"], "side": "buy", "qty": str(int(s["qty"])), "type": s["order_type"],
+    asset = parse_symbol(s["symbol"])
+    qty_str = str(int(s["qty"])) if s["qty"] == int(s["qty"]) else str(round(s["qty"], 4))
+    o = {"symbol": s["symbol"], "side": "buy", "qty": qty_str, "type": s["order_type"],
          "time_in_force": "day"}
     if s["order_type"] == "limit":
         o["limit_price"] = _price(s["entry"])
     setup = SETUP_WORDS.get(s["setup"], s["setup"] or "day trade")
-    why = ("%s on %s: %d shares, bound by your %s (%d x %s = %s at the stop)"
-           % (setup, s["symbol"], s["qty"], {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_usd"] or 0),
+    why = ("%s on %s: %s shares, bound by your %s (%s x %s = %s at the stop)"
+           % (setup, s["symbol"], qty_str, {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_usd"] or 0, asset.currency_symbol),
                                              "position cap": "position cap", "max order": "max order",
                                              "cash": "cash after the buffer"}[s["bound_by"]],
-              s["qty"], _price(s["risk_per_share"]), money(s["max_loss"])))
+              qty_str, _price(s["risk_per_share"]), money(s["max_loss"], asset.currency_symbol)))
     o.update({
         "order_class": "bracket",
         "take_profit_limit_price": _price(s["target"]),

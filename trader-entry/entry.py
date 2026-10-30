@@ -228,7 +228,10 @@ def next_open(d):
 # ---------------------------------------------------------------- Yahoo
 
 def yahoo_symbol(sym):
-    return sym.upper().replace(".", "-")
+    s = sym.upper()
+    if s.endswith(".NS") or s.endswith(".BO") or s.startswith("^"):
+        return s
+    return s.replace(".", "-")
 
 
 def chart_path(sym, rng, interval):

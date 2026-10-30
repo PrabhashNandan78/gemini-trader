@@ -67,6 +67,12 @@ import os
 import re
 import sys
 
+try:
+    from engine.asset_model import parse_symbol, get_market_status, format_currency, RE_ANY_TICKER, NSE_HOLIDAYS
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from engine.asset_model import parse_symbol, get_market_status, format_currency, RE_ANY_TICKER, NSE_HOLIDAYS
+
 DEFAULTS = {
     "budget": None, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_usd": 4000,
     "min_order_usd": 5, "max_loss_per_trade_usd": 50, "max_daily_loss_usd": 150, "max_trades_per_day": 3,
@@ -84,7 +90,7 @@ PRICE_FIELDS = ("qty", "notional", "limit_price", "stop_price", "take_profit_lim
 TYPES = {"market", "limit", "stop", "stop_limit", "trailing_stop"}
 TIFS = {"day", "gtc", "opg", "cls", "ioc", "fok"}
 OCC = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
-TICKER = re.compile(r"^[A-Z]{1,5}([.\-][A-Z]{1,2})?$")
+TICKER = RE_ANY_TICKER
 HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 CENT = 0.005
 FRESH_MINUTES = 15
@@ -462,7 +468,9 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if notional is not None:
                 reasons.append("format: a bracket order needs a whole-share qty, not a notional amount")
             elif _f(qty) is not None and abs(_f(qty) - round(_f(qty))) > 1e-9:
-                reasons.append("format: a bracket order takes whole shares only, got qty %r" % qty)
+                _ai = parse_symbol(sym) if sym else None
+                if not (_ai and _ai.allow_fractional) and not c.get("fractional"):
+                    reasons.append("format: a bracket order takes whole shares only, got qty %r" % qty)
             if tif not in ("day", "gtc"):
                 reasons.append("format: a bracket order needs time_in_force day or gtc, got %r" % tif)
             if o.get("take_profit_limit_price") is None or o.get("stop_loss_stop_price") is None:
@@ -480,8 +488,14 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             else:
                 warns.append("option order: options can lose 100%% of what you pay")
         elif sym and ("/" in sym or not TICKER.match(sym)):
-            reasons.append("asset: %s does not look like a US stock or ETF ticker; "
-                           "this pack trades stocks and ETFs only" % sym)
+            if "/" in sym and (TICKER.match(sym) or TICKER.match(sym.replace("/", "-"))) and not c.get("allow_crypto", False):
+                reasons.append("asset: %s is a crypto pair; this pack trades stocks and ETFs only" % sym)
+            else:
+                reasons.append("asset: %s does not look like a US stock or ETF ticker; "
+                               "this pack trades stocks and ETFs only" % sym)
+        elif sym and parse_symbol(sym).asset_class == "crypto" and not c.get("allow_crypto", False):
+            reasons.append("asset: %s is a cryptocurrency; crypto trading is disabled; "
+                           "this pack trades stocks and ETFs only (\"allow_crypto\": true to enable)" % sym)
 
         # the reference price: what one share costs to get in
         plan_entry = _f(plan.get("entry"))
@@ -623,7 +637,17 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if cap_t and len(entries_today) + batch_entries >= cap_t:
                 later.append("trades: %d entries placed today plus %d passed earlier in this batch, your limit "
                              "is %d a day" % (len(entries_today), batch_entries, cap_t))
-            later.extend(win_reasons)
+            _ai_win = parse_symbol(sym) if sym else None
+            if _ai_win and _ai_win.is_continuous_24_7:
+                pass
+            elif _ai_win and _ai_win.asset_class in ("equity_in", "index") and _ai_win.exchange == "NSE":
+                if (c.get("no_entries_before") is not None or c.get("no_entries_after") is not None) and not c.get("skip_window"):
+                    _m_stat = get_market_status(_ai_win, now_utc)
+                    if not _m_stat["is_open"]:
+                        later.append("window: the market is closed today (%s, %s IST)"
+                                     % (_m_stat["reason"], _m_stat["local_time"][:16].replace("T", " ")))
+            else:
+                later.extend(win_reasons)
             if c.get("pdt_guard") and pdt_n >= 3:
                 later.append("pdt: %d day trades in the last 5 business days (%s); a 4th trips the "
                              "pattern-day-trader rule your broker applies (\"pdt_guard\": true)"

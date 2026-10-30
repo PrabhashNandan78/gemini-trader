@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*$py.class
+trader/state/*.jsonl
+trader/portfolio.json
+trader/orders.json
+trader/plan.json
+trader/prices.json
+trader/news.json
+trader/quotes.json
+trader/universe.json
+trader/daily.json
+.pytest_cache/
+.DS_Store

@@ -391,7 +391,8 @@ def read_text(path):
 
 
 def load_chart(sym, interval, day, offline=None):
-    ysym = sym.upper().replace(".", "-")
+    s = sym.upper()
+    ysym = s if (s.endswith(".NS") or s.endswith(".BO") or s.startswith("^")) else s.replace(".", "-")
     if offline:
         path = offline
         if os.path.isdir(offline):

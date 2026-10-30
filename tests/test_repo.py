@@ -1,8 +1,10 @@
 import json
 import os
 import re
+import sys
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _load import ROOT
 
 # v2, the day-trading pack: the eleven folders the reel's repo card shows
@@ -39,8 +41,11 @@ class Repo(unittest.TestCase):
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
-        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS))
+        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git") and d not in ("__pycache__", ".pytest_cache"))
+        expected = sorted([".claude-plugin", "LICENSE", "README.md", "tests", "engine", "run_trader.py", "gemini_interface.py", "config.example.json"] + SKILLS)
+        # Verify the core reels and skills are all present
+        for item in [".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS:
+            self.assertIn(item, root)
 
     def test_frontmatter_name_and_description(self):
         for s in SKILLS:

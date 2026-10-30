@@ -192,6 +192,9 @@ class Fetcher(object):
 
 
 def yahoo_symbol(ticker):
+    s = ticker.upper()
+    if s.endswith(".NS") or s.endswith(".BO") or s.startswith("^"):
+        return s
     return ticker.upper().replace(".", "-")
 
 
@@ -393,6 +396,8 @@ def collect(fetcher, watch, state, sec=True, forms=("8-K",), count=10, errors=No
             errors.append("SEC ticker list: %s" % exc)
             ciks = {}
         for t in sorted(watch):
+            if t.endswith(".NS") or t.endswith(".BO") or "-" in t or t.startswith("^"):
+                continue
             cik = ciks.get(t)
             if not cik:
                 if ciks:

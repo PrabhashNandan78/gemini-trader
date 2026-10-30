@@ -57,6 +57,12 @@ import time
 import urllib.error
 import urllib.request
 
+try:
+    from engine.asset_model import parse_symbol, get_market_status
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from engine.asset_model import parse_symbol, get_market_status
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5    # seconds between requests: be polite to free endpoints
 BACKOFF = 2.0  # seconds to wait before the one retry after a 429
@@ -198,7 +204,9 @@ def stooq_url(sym):
 
 
 def yahoo_url(sym, host=YAHOO_HOSTS[0]):
-    return "https://%s/v8/finance/chart/%s?range=1d&interval=1d" % (host, sym.upper().replace(".", "-"))
+    s = sym.upper()
+    ysym = s if (s.endswith(".NS") or s.endswith(".BO") or s.startswith("^")) else s.replace(".", "-")
+    return "https://%s/v8/finance/chart/%s?range=1d&interval=1d" % (host, ysym)
 
 
 def parse_stooq(text, sym):
@@ -543,6 +551,19 @@ def _dedupe(items):
 
 
 def cmd_clock(a):
+    sym = getattr(a, "symbol", None)
+    if sym:
+        asset = parse_symbol(sym)
+        now_dt = parse_now(a.now)
+        st = get_market_status(asset, now_dt)
+        if a.json:
+            print(json.dumps(st, indent=2))
+        else:
+            print("%s (%s, %s): %s, %s." % (
+                asset.symbol, asset.exchange, asset.timezone_name,
+                "OPEN" if st["is_open"] else "closed", st["reason"]))
+        return 0 if st["is_open"] else 1
+
     st = market_status(parse_now(a.now))
     if a.json:
         print(json.dumps(st, indent=2))
@@ -726,6 +747,7 @@ def main(argv=None):
         p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("clock", help="is the NYSE open?")
+    p.add_argument("--symbol", help="check clock for a specific symbol (e.g. RELIANCE.NS, BTC-USD)")
     p.add_argument("--now")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("quote", help="latest delayed quotes")

@@ -1,0 +1,70 @@
+{
+  "default_market": "india",
+  "currency": "INR",
+  "currency_symbol": "₹",
+  "budget": 200000.0,
+  "max_order_usd": 100000.0,
+  "cash_buffer_pct": 5,
+  "paper": true,
+  "live": false,
+  "allow_crypto": true,
+  "allow_options": false,
+  "allow_margin": false,
+  "allow_short": false,
+  "require_stop": true,
+  "min_reward_risk": 2.0,
+  "max_loss_per_trade_inr": 2000,
+  "max_daily_loss_inr": 5000,
+  "max_position_pct": 50.0,
+  "max_loss_per_trade_usd": 100,
+  "max_daily_loss_usd": 250,
+  "max_trades_per_day": 3,
+  "no_entries_after": "14:45",
+  "flat_by": "15:15",
+  "watchlists": {
+    "india": [
+      "RELIANCE.NS",
+      "TCS.NS",
+      "INFY.NS",
+      "HDFCBANK.NS",
+      "ICICIBANK.NS",
+      "TATAMOTORS.NS",
+      "SBIN.NS",
+      "BHARTIARTL.NS"
+    ],
+    "crypto": [
+      "BTC-USD",
+      "ETH-USD",
+      "SOL-USD",
+      "BTC-INR",
+      "ETH-INR"
+    ],
+    "us": [
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "TSLA",
+      "AMZN",
+      "GOOGL",
+      "META"
+    ]
+  },
+  "sessions": {
+    "india": {
+      "timezone": "Asia/Kolkata",
+      "open": "09:15",
+      "close": "15:30",
+      "bars_per_day": 75
+    },
+    "us": {
+      "timezone": "America/New_York",
+      "open": "09:30",
+      "close": "16:00",
+      "bars_per_day": 78
+    },
+    "crypto": {
+      "timezone": "UTC",
+      "continuous": true
+    }
+  }
+}
