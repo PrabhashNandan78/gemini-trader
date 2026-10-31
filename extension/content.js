@@ -29,6 +29,9 @@
     unverifiedReason: null,
     autoRefresh: true,
     autoTimer: null,
+    autoExecutePaper: false,
+    newEntriesPaused: false,
+    activePosition: null,
     isDragging: false,
     dragOffset: { x: 0, y: 0 }
   };
@@ -50,13 +53,15 @@
     observeChartChanges();
 
     // Listen for extension popup queries
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      if (request.action === 'GET_ACTIVE_SYMBOL') {
-        const ctx = detectTradingViewContext();
-        sendResponse(ctx);
-      }
-      return true;
-    });
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+      chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.action === 'GET_ACTIVE_SYMBOL') {
+          const ctx = detectTradingViewContext();
+          sendResponse(ctx);
+        }
+        return true;
+      });
+    }
   }
 
   function isTradingViewChartPage() {
@@ -344,6 +349,27 @@
           </div>
         </div>
 
+        <!-- Active Position Card (if open) -->
+        <div class="tv-copilot-card" id="tvActivePosCard" style="display: none; border: 1px solid #38bdf8; background: rgba(56, 189, 248, 0.08);">
+          <div class="tv-copilot-row" style="margin-bottom: 4px;">
+            <strong style="color: #38bdf8;">Open Paper Position:</strong>
+            <span id="tvPosSideBadge" class="tv-copilot-badge tv-copilot-badge-buy">BUY</span>
+          </div>
+          <div class="tv-copilot-row">
+            <span class="tv-copilot-label">Qty / Entry:</span>
+            <span class="tv-copilot-val" id="tvPosQtyEntry">-</span>
+          </div>
+          <div class="tv-copilot-row">
+            <span class="tv-copilot-label">Unrealized P&L:</span>
+            <span class="tv-copilot-val" id="tvPosPnL" style="font-weight: bold; color: #00e676;">₹0.00</span>
+          </div>
+          <div class="tv-copilot-row" style="margin-top: 6px;">
+            <button class="tv-copilot-btn tv-copilot-btn-danger" id="tvBtnClosePos" style="width: 100%; padding: 4px 8px; font-size: 11px;">
+              Close Position
+            </button>
+          </div>
+        </div>
+
         <!-- Actions -->
         <div class="tv-copilot-actions">
           <button class="tv-copilot-btn tv-copilot-btn-primary" id="tvBtnRefresh">
@@ -352,6 +378,14 @@
           <button class="tv-copilot-btn tv-copilot-btn-success" id="tvBtnExecute" disabled>
             <span>🚀</span> Execute Paper Order
           </button>
+          <div style="display: flex; gap: 6px; width: 100%;">
+            <button class="tv-copilot-btn tv-copilot-btn-warning" id="tvBtnPauseEntries" style="flex: 1; font-size: 10px; padding: 5px 4px;">
+              ⏸️ Pause Entries
+            </button>
+            <button class="tv-copilot-btn tv-copilot-btn-danger" id="tvBtnKillSwitch" style="flex: 1; font-size: 10px; padding: 5px 4px;">
+              🛑 Kill Switch
+            </button>
+          </div>
           <button class="tv-copilot-btn tv-copilot-btn-secondary" id="tvBtnDashboard">
             <span>📈</span> Open Full Dashboard
           </button>
@@ -359,6 +393,10 @@
           <div class="tv-copilot-toggle-row">
             <span>Auto-Scan (30s):</span>
             <input type="checkbox" id="tvCheckAuto" checked>
+          </div>
+          <div class="tv-copilot-toggle-row">
+            <span style="color: #a78bfa; font-weight: 600;">Auto Paper Exec:</span>
+            <input type="checkbox" id="tvCheckAutoPaper">
           </div>
         </div>
       </div>
@@ -385,8 +423,12 @@
     const btnRefresh = document.getElementById('tvBtnRefresh');
     const btnExecute = document.getElementById('tvBtnExecute');
     const btnDashboard = document.getElementById('tvBtnDashboard');
+    const btnPauseEntries = document.getElementById('tvBtnPauseEntries');
+    const btnKillSwitch = document.getElementById('tvBtnKillSwitch');
+    const btnClosePos = document.getElementById('tvBtnClosePos');
     const intervalSelect = document.getElementById('tvIntervalSelect');
     const checkAuto = document.getElementById('tvCheckAuto');
+    const checkAutoPaper = document.getElementById('tvCheckAutoPaper');
 
     // Dragging logic
     header.addEventListener('mousedown', (e) => {
@@ -450,7 +492,70 @@
       setupAutoRefresh();
     });
 
+    // Auto Paper Execution toggle
+    checkAutoPaper.addEventListener('change', async (e) => {
+      STATE.autoExecutePaper = e.target.checked;
+      try {
+        await apiCall('/config', 'POST', { auto_execute_paper: STATE.autoExecutePaper });
+        showToast(STATE.autoExecutePaper ? 'Auto Paper Execution: ENABLED' : 'Auto Paper Execution: DISABLED');
+      } catch (err) {
+        console.error('Failed to update auto paper config:', err);
+      }
+    });
+
+    // Pause New Entries toggle button
+    btnPauseEntries.addEventListener('click', async () => {
+      try {
+        const res = await apiCall('/pause', 'POST', {});
+        STATE.newEntriesPaused = res.new_entries_paused;
+        updatePauseButtonState(btnPauseEntries, STATE.newEntriesPaused);
+        showToast(STATE.newEntriesPaused ? 'New Entries PAUSED' : 'New Entries ACTIVE');
+      } catch (err) {
+        showToast(`Pause failed: ${err.message}`);
+      }
+    });
+
+    // Kill switch button
+    btnKillSwitch.addEventListener('click', async () => {
+      if (!confirm('Are you sure you want to trigger the EMERGENCY KILL SWITCH? This will liquidate open paper positions.')) return;
+      try {
+        const res = await apiCall('/emergency_stop', 'POST', {});
+        showToast('Kill Switch Activated! Orders cancelled & positions closed.');
+        runAnalysis();
+      } catch (err) {
+        showToast(`Kill switch error: ${err.message}`);
+      }
+    });
+
+    // Close current position button
+    if (btnClosePos) {
+      btnClosePos.addEventListener('click', async () => {
+        try {
+          const res = await apiCall('/close_position', 'POST', { symbol: STATE.mappedSymbol });
+          if (res.success) {
+            showToast(`Position closed for ${STATE.mappedSymbol}`);
+            runAnalysis();
+          } else {
+            showToast(`Close failed: ${res.reason || 'Unknown'}`);
+          }
+        } catch (err) {
+          showToast(`Close error: ${err.message}`);
+        }
+      });
+    }
+
     setupAutoRefresh();
+  }
+
+  function updatePauseButtonState(btn, isPaused) {
+    if (!btn) return;
+    if (isPaused) {
+      btn.textContent = '▶️ Resume Entries';
+      btn.style.background = '#059669';
+    } else {
+      btn.textContent = '⏸️ Pause Entries';
+      btn.style.background = '#d97706';
+    }
   }
 
   function setupAutoRefresh() {
@@ -467,6 +572,9 @@
 
   // ---------------------------------------------------------------- Backend Communication
   async function apiCall(endpoint, method = 'GET', body = null) {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+      return directFetch(endpoint, method, body);
+    }
     // Attempt 1: Through background service worker proxy
     return new Promise((resolve, reject) => {
       try {
@@ -526,6 +634,31 @@
     if (symEl) symEl.textContent = STATE.symbol;
     if (intervalSelect) intervalSelect.value = STATE.interval;
 
+    // Announce active context to Copilot backend for dashboard synchronization
+    try {
+      await apiCall('/active_context', 'POST', {
+        symbol: ctx.symbol,
+        interval: ctx.interval,
+        source: 'tradingview',
+        unverified: !!ctx.unverified,
+        reason: ctx.reason || null
+      });
+    } catch (e) {
+      console.warn('[Copilot] Failed to announce active context to backend:', e);
+    }
+
+    try {
+      const statusRes = await apiCall('/status', 'GET');
+      if (statusRes && statusRes.config) {
+        STATE.autoExecutePaper = !!statusRes.config.auto_execute_paper;
+        STATE.newEntriesPaused = !!statusRes.config.new_entries_paused;
+        const checkAutoPaper = document.getElementById('tvCheckAutoPaper');
+        if (checkAutoPaper) checkAutoPaper.checked = STATE.autoExecutePaper;
+        const btnPause = document.getElementById('tvBtnPauseEntries');
+        if (btnPause) updatePauseButtonState(btnPause, STATE.newEntriesPaused);
+      }
+    } catch (_) {}
+
     await runAnalysis();
   }
 
@@ -558,7 +691,8 @@
 
       const data = await apiCall('/analyze', 'POST', {
         symbol: STATE.symbol,
-        interval: STATE.interval
+        interval: STATE.interval,
+        auto_execute: STATE.autoExecutePaper
       });
 
       STATE.connected = true;
@@ -573,6 +707,12 @@
       if (alertBox) alertBox.classList.remove('visible');
 
       renderAnalysisResult(data);
+
+      if (data.analysis && data.analysis.auto_execution && data.analysis.auto_execution.executed) {
+        showToast(`Auto Paper Executed! Order: ${data.analysis.auto_execution.order_id} @ ${formatPrice(data.analysis.auto_execution.fill_price)}`);
+      }
+
+      syncActivePositions();
     } catch (err) {
       const hasHttpStatus = err && (typeof err.status === 'number' || (err.data && err.data.status));
       if (hasHttpStatus) {
@@ -760,6 +900,7 @@
       });
       if (res.success) {
         showToast(`Paper Order Filled! ID: ${res.order_id || 'OK'}`);
+        syncActivePositions();
       } else {
         showToast(`Order Rejected: ${res.reason || 'Unknown error'}`);
       }
@@ -768,6 +909,44 @@
     } finally {
       btnExecute.disabled = false;
       btnExecute.textContent = '🚀 Execute Paper Order';
+    }
+  }
+
+  async function syncActivePositions() {
+    try {
+      const res = await apiCall('/positions', 'GET');
+      const positions = (res && res.positions) || [];
+      const currentSym = STATE.mappedSymbol || STATE.symbol;
+      const active = positions.find(p => p.symbol === currentSym || p.symbol === STATE.symbol);
+
+      const card = document.getElementById('tvActivePosCard');
+      const sideBadge = document.getElementById('tvPosSideBadge');
+      const qtyEntry = document.getElementById('tvPosQtyEntry');
+      const pnlEl = document.getElementById('tvPosPnL');
+
+      if (active && card) {
+        STATE.activePosition = active;
+        card.style.display = 'block';
+        if (sideBadge) {
+          sideBadge.textContent = active.side || 'BUY';
+          sideBadge.className = `tv-copilot-badge tv-copilot-badge-${(active.side || 'BUY').toLowerCase()}`;
+        }
+        if (qtyEntry) {
+          qtyEntry.textContent = `${active.quantity} @ ${formatPrice(active.entry_price)}`;
+        }
+        if (pnlEl) {
+          const pnl = active.unrealized_pnl || 0;
+          const pnlPct = active.unrealized_pnl_pct != null ? active.unrealized_pnl_pct.toFixed(2) : '0.00';
+          const sign = pnl >= 0 ? '+' : '';
+          pnlEl.textContent = `${sign}${formatPrice(pnl)} (${sign}${pnlPct}%)`;
+          pnlEl.style.color = pnl >= 0 ? '#00e676' : '#ff3d71';
+        }
+      } else if (card) {
+        STATE.activePosition = null;
+        card.style.display = 'none';
+      }
+    } catch (e) {
+      console.warn('[Copilot] Failed to sync active positions:', e);
     }
   }
 
@@ -814,6 +993,16 @@
 
     window.addEventListener('popstate', () => {
       setTimeout(syncWithPageContext, 200);
+    });
+
+    // Synchronize immediately when user focuses or switches back to this tab
+    window.addEventListener('focus', () => {
+      syncWithPageContext();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        syncWithPageContext();
+      }
     });
   }
 

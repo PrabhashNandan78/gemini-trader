@@ -99,6 +99,14 @@ const el = {
   statProfitFactor: document.getElementById('statProfitFactor'),
   statAvgR: document.getElementById('statAvgR'),
   statNetPnL: document.getElementById('statNetPnL'),
+  healthStatusBadge: document.getElementById('healthStatusBadge'),
+  healthInstrumentVal: document.getElementById('healthInstrumentVal'),
+  healthIntervalVal: document.getElementById('healthIntervalVal'),
+  healthProviderVal: document.getElementById('healthProviderVal'),
+  healthUpdateVal: document.getElementById('healthUpdateVal'),
+  healthAgeVal: document.getElementById('healthAgeVal'),
+  healthCandlesVal: document.getElementById('healthCandlesVal'),
+  healthTvSyncBadge: document.getElementById('healthTvSyncBadge'),
 };
 
 // Initialization
@@ -110,14 +118,31 @@ document.addEventListener('DOMContentLoaded', () => {
   initChartCanvas();
   bindEvents();
   fetchStatus();
+  fetchPositions();
+  syncTradingViewContext();
   fetchChartData();
   fetchTrades();
 
-  // Polling loop every 3 seconds
+  // Polling loop every 3 seconds for status, positions, and active TV context
   state.refreshTimer = setInterval(() => {
     fetchStatus();
     fetchPositions();
+    syncTradingViewContext();
   }, 3000);
+
+  // Periodic live chart candle refresh (every 8 seconds)
+  state.chartPollTimer = setInterval(() => {
+    fetchChartData(true);
+  }, 8000);
+
+  // Smooth live age ticker (every 1 second)
+  setInterval(() => {
+    if (state.lastHealthUpdateTs && el.healthAgeVal) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const age = Math.max(0, nowSec - state.lastHealthUpdateTs);
+      el.healthAgeVal.textContent = `${age}s ago`;
+    }
+  }, 1000);
 });
 
 // Watchlist Rendering
@@ -203,6 +228,32 @@ function bindEvents() {
     const isLive = cfgMode.value === 'live';
     document.getElementById('liveWarningBox').style.display = isLive ? 'block' : 'none';
   });
+
+  const headerAutoPaperToggle = document.getElementById('headerAutoPaperToggle');
+  if (headerAutoPaperToggle) {
+    headerAutoPaperToggle.addEventListener('change', async (e) => {
+      try {
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ auto_execute_paper: e.target.checked })
+        });
+        fetchStatus();
+      } catch (err) {
+        console.error('Failed to toggle auto paper execution:', err);
+      }
+    });
+  }
+
+  const btnHeaderPause = document.getElementById('btnHeaderPauseEntries');
+  if (btnHeaderPause) {
+    btnHeaderPause.addEventListener('click', togglePauseEntries);
+  }
+
+  const btnCloseAll = document.getElementById('btnCloseAllPositions');
+  if (btnCloseAll) {
+    btnCloseAll.addEventListener('click', closeAllPositions);
+  }
 }
 
 // API Calls
@@ -238,12 +289,126 @@ function renderStatus(data) {
     el.btnExecuteOrder.textContent = '🚀 Execute Order (Paper)';
     el.btnExecuteOrder.className = 'btn btn-success btn-block';
   }
+
+  const autoToggle = document.getElementById('headerAutoPaperToggle');
+  if (autoToggle) {
+    autoToggle.checked = !!data.auto_execute_paper;
+  }
+  const btnHeaderPause = document.getElementById('btnHeaderPauseEntries');
+  if (btnHeaderPause) {
+    if (data.new_entries_paused) {
+      btnHeaderPause.textContent = '▶️ Resume';
+      btnHeaderPause.style.background = '#059669';
+    } else {
+      btnHeaderPause.textContent = '⏸️ Pause';
+      btnHeaderPause.style.background = '#d97706';
+    }
+  }
 }
 
-async function fetchChartData() {
+async function syncTradingViewContext() {
+  try {
+    const res = await fetch('/api/active_context');
+    if (!res.ok) return;
+    const data = await res.json();
+    const ctx = data.active_context || {};
+
+    if (data.synced && ctx.symbol && ctx.symbol !== 'UNVERIFIED') {
+      if (el.healthTvSyncBadge) {
+        el.healthTvSyncBadge.textContent = 'SYNCHRONIZED';
+        el.healthTvSyncBadge.className = 'health-badge sync-active';
+        el.healthTvSyncBadge.title = `Synced with TradingView active chart (${ctx.raw_symbol || ctx.symbol})`;
+      }
+
+      // Check if active TV chart differs from dashboard current selection
+      const targetSymbol = ctx.symbol;
+      const targetInterval = ctx.interval || state.currentInterval;
+      const targetMarket = ctx.market || state.currentMarket;
+
+      if (targetSymbol !== state.currentSymbol || targetInterval !== state.currentInterval) {
+        console.log(`[Dashboard] Syncing with active TradingView chart: ${targetSymbol} (${targetInterval})`);
+        state.currentSymbol = targetSymbol;
+        state.currentInterval = targetInterval;
+        if (targetMarket) state.currentMarket = targetMarket;
+
+        if (el.selectInterval) el.selectInterval.value = targetInterval;
+        initWatchlist();
+        fetchChartData();
+      }
+    } else {
+      if (el.healthTvSyncBadge) {
+        if (data.status === 'UNSUPPORTED_INSTRUMENT') {
+          el.healthTvSyncBadge.textContent = 'UNSUPPORTED INSTRUMENT';
+          el.healthTvSyncBadge.className = 'health-badge status-unsupported';
+          el.healthTvSyncBadge.title = ctx.reason || 'Instrument not supported';
+        } else if (data.status === 'UNVERIFIED') {
+          el.healthTvSyncBadge.textContent = 'TV UNVERIFIED';
+          el.healthTvSyncBadge.className = 'health-badge status-stale';
+          el.healthTvSyncBadge.title = ctx.reason || 'TradingView chart context unverified';
+        } else {
+          el.healthTvSyncBadge.textContent = 'TRADINGVIEW NOT SYNCHRONIZED';
+          el.healthTvSyncBadge.className = 'health-badge sync-off';
+          el.healthTvSyncBadge.title = 'No active TradingView tab connected';
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to sync TV context:', e);
+  }
+}
+
+function updateDataHealth(data) {
+  const health = data.data_health || {};
+  const status = health.status || 'LIVE';
+  state.lastHealthUpdateTs = health.last_updated_ts || Math.floor(Date.now() / 1000);
+
+  if (el.healthStatusBadge) {
+    el.healthStatusBadge.textContent = status;
+    el.healthStatusBadge.className = 'health-badge';
+    if (status === 'LIVE' || status.startsWith('LIVE')) {
+      el.healthStatusBadge.classList.add('status-live');
+    } else if (status === 'STALE DATA') {
+      el.healthStatusBadge.classList.add('status-stale');
+    } else if (status === 'DATA DISCONNECTED') {
+      el.healthStatusBadge.classList.add('status-disconnected');
+    } else {
+      el.healthStatusBadge.classList.add('status-unsupported');
+    }
+  }
+
+  if (el.healthInstrumentVal) {
+    el.healthInstrumentVal.textContent = data.display_name || data.symbol || state.currentSymbol;
+  }
+  if (el.healthIntervalVal) {
+    el.healthIntervalVal.textContent = data.interval || state.currentInterval || '15m';
+  }
+  if (el.healthProviderVal) {
+    el.healthProviderVal.textContent = health.provider || data.source || 'Live Feed';
+  }
+  if (el.healthUpdateVal) {
+    if (health.last_updated_iso) {
+      const dt = new Date(health.last_updated_iso);
+      el.healthUpdateVal.textContent = isNaN(dt.getTime()) ? health.last_updated_iso : dt.toLocaleTimeString();
+    } else {
+      el.healthUpdateVal.textContent = new Date().toLocaleTimeString();
+    }
+  }
+  if (el.healthAgeVal) {
+    const age = typeof health.data_age_sec === 'number' ? health.data_age_sec : 0;
+    el.healthAgeVal.textContent = `${age}s ago`;
+  }
+  if (el.healthCandlesVal) {
+    const count = (data.bars && data.bars.length) || health.candle_count || 0;
+    el.healthCandlesVal.textContent = `${count} / 80`;
+  }
+}
+
+async function fetchChartData(isBackground = false) {
   state.chartErrorMessage = null;
-  el.chartDataBadge.textContent = 'Loading...';
-  el.chartDataBadge.className = 'chart-badge';
+  if (!isBackground) {
+    el.chartDataBadge.textContent = 'Loading...';
+    el.chartDataBadge.className = 'chart-badge';
+  }
   const interval = state.currentInterval || '15m';
   if (el.chartInterval) {
     el.chartInterval.textContent = `${interval} Intraday`;
@@ -274,12 +439,17 @@ async function fetchChartData() {
     if (data.regime) {
       updateRegimeBadge(data.regime);
     }
+    updateDataHealth(data);
     drawChart();
   } catch (err) {
     state.activeBars = [];
     state.chartErrorMessage = err.message || 'Data Error';
     el.chartDataBadge.textContent = 'Data Error';
     el.chartDataBadge.className = 'chart-badge error';
+    if (el.healthStatusBadge) {
+      el.healthStatusBadge.textContent = 'DATA DISCONNECTED';
+      el.healthStatusBadge.className = 'health-badge status-disconnected';
+    }
     console.error('Failed to fetch chart:', err);
     drawChart();
   }
@@ -559,6 +729,10 @@ async function openSettingsModal() {
     document.getElementById('cfgMaxAllocation').value = cfg.max_allocation || 50000;
     document.getElementById('cfgMaxExposure').value = cfg.max_open_exposure || 75000;
     document.getElementById('cfgMaxPositions').value = cfg.max_concurrent_positions || 3;
+    const cfgAuto = document.getElementById('cfgAutoPaperExecution');
+    if (cfgAuto) cfgAuto.value = String(!!cfg.auto_execute_paper);
+    const cfgPause = document.getElementById('cfgPauseNewEntries');
+    if (cfgPause) cfgPause.value = String(!!cfg.new_entries_paused);
     document.getElementById('liveWarningBox').style.display = cfg.mode === 'live' ? 'block' : 'none';
     el.modalSettings.style.display = 'flex';
   } catch (err) {
@@ -578,6 +752,8 @@ async function saveSettings() {
     max_allocation: parseFloat(document.getElementById('cfgMaxAllocation').value),
     max_open_exposure: parseFloat(document.getElementById('cfgMaxExposure').value),
     max_concurrent_positions: parseInt(document.getElementById('cfgMaxPositions').value, 10),
+    auto_execute_paper: document.getElementById('cfgAutoPaperExecution') ? document.getElementById('cfgAutoPaperExecution').value === 'true' : false,
+    new_entries_paused: document.getElementById('cfgPauseNewEntries') ? document.getElementById('cfgPauseNewEntries').value === 'true' : false,
   };
 
   try {
@@ -595,6 +771,43 @@ async function saveSettings() {
     }
   } catch (err) {
     alert('Error saving settings: ' + err);
+  }
+}
+
+async function togglePauseEntries() {
+  const isPaused = state.systemStatus && state.systemStatus.new_entries_paused;
+  const endpoint = isPaused ? '/api/resume' : '/api/pause';
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    const data = await res.json();
+    if (state.systemStatus) {
+      state.systemStatus.new_entries_paused = !!data.new_entries_paused;
+    }
+    await fetchStatus();
+  } catch (err) {
+    alert(`Failed to update pause state: ${err}`);
+  }
+}
+
+async function closeAllPositions() {
+  const confirmed = confirm('Close ALL open paper positions immediately?');
+  if (!confirmed) return;
+  try {
+    const res = await fetch('/api/close_all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    const data = await res.json();
+    await fetchPositions();
+    await fetchStatus();
+    await fetchTrades();
+  } catch (err) {
+    console.error(`Failed to close positions: ${err}`);
   }
 }
 

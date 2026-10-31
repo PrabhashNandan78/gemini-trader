@@ -354,6 +354,24 @@
   color: #ffffff;
 }
 
+.tv-copilot-btn-warning {
+  background: #d97706;
+  color: #ffffff;
+}
+
+.tv-copilot-btn-warning:hover:not(:disabled) {
+  background: #b45309;
+}
+
+.tv-copilot-btn-danger {
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.tv-copilot-btn-danger:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
 .tv-copilot-toggle-row {
   display: flex;
   align-items: center;

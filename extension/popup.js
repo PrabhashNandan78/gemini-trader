@@ -7,6 +7,7 @@ const API_BASE = 'http://127.0.0.1:8765/api';
 
 let currentAnalysis = null;
 let systemMode = 'paper';
+let newEntriesPaused = false;
 
 document.addEventListener('DOMContentLoaded', () => {
   fetchCopilotStatus();
@@ -18,6 +19,51 @@ function bindPopupEvents() {
   document.getElementById('btnAnalyze').addEventListener('click', runCopilotAnalysis);
   document.getElementById('btnExecute').addEventListener('click', executeOrderFromPopup);
   document.getElementById('btnEmergencyStop').addEventListener('click', triggerKillSwitch);
+
+  const checkAuto = document.getElementById('popupCheckAutoPaper');
+  if (checkAuto) {
+    checkAuto.addEventListener('change', async (e) => {
+      try {
+        await fetch(`${API_BASE}/config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ auto_execute_paper: e.target.checked })
+        });
+        fetchCopilotStatus();
+      } catch (err) {
+        console.error('Failed to update auto paper execution:', err);
+      }
+    });
+  }
+
+  const btnPause = document.getElementById('popupBtnPauseEntries');
+  if (btnPause) {
+    btnPause.addEventListener('click', async () => {
+      const endpoint = newEntriesPaused ? `${API_BASE}/resume` : `${API_BASE}/pause`;
+      try {
+        const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await res.json();
+        newEntriesPaused = !!data.new_entries_paused;
+        updatePauseButton();
+      } catch (err) {
+        alert('Failed to toggle pause: ' + err);
+      }
+    });
+  }
+}
+
+function updatePauseButton() {
+  const btnPause = document.getElementById('popupBtnPauseEntries');
+  if (!btnPause) return;
+  if (newEntriesPaused) {
+    btnPause.textContent = '▶️ Resume';
+    btnPause.style.borderColor = '#059669';
+    btnPause.style.color = '#059669';
+  } else {
+    btnPause.textContent = '⏸️ Pause';
+    btnPause.style.borderColor = '#d97706';
+    btnPause.style.color = '#d97706';
+  }
 }
 
 async function fetchCopilotStatus() {
@@ -25,6 +71,7 @@ async function fetchCopilotStatus() {
     const res = await fetch(`${API_BASE}/status`);
     const data = await res.json();
     systemMode = data.mode || 'paper';
+    newEntriesPaused = !!data.new_entries_paused;
 
     const curr = data.currency === 'INR' ? '₹' : '$';
     document.getElementById('balanceVal').textContent = `${curr}${Number(data.balance).toLocaleString()}`;
@@ -34,6 +81,12 @@ async function fetchCopilotStatus() {
       document.getElementById('modeBadge').style.borderColor = 'var(--red)';
       document.getElementById('modeBadge').style.color = 'var(--red)';
     }
+
+    const checkAuto = document.getElementById('popupCheckAutoPaper');
+    if (checkAuto) {
+      checkAuto.checked = !!data.auto_execute_paper;
+    }
+    updatePauseButton();
   } catch (err) {
     document.getElementById('balanceVal').textContent = 'Server Offline';
     document.getElementById('regimeVal').textContent = 'Run copilot server';

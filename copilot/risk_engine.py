@@ -41,6 +41,8 @@ class UserRiskConfig:
     cash_buffer_pct: float = 10.0           # 10% cash buffer
     emergency_stop: bool = False            # Global emergency kill switch
     min_planned_rr: float = 3.0             # Strict 3:1 planned reward-to-risk
+    auto_execute_paper: bool = False        # Auto paper trade execution toggle (default False)
+    new_entries_paused: bool = False        # Pause new entries toggle (default False)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "UserRiskConfig":
@@ -63,6 +65,8 @@ class UserRiskConfig:
         cfg.cash_buffer_pct = float(data.get("cash_buffer_pct", cfg.cash_buffer_pct))
         cfg.emergency_stop = bool(data.get("emergency_stop", False))
         cfg.min_planned_rr = float(data.get("min_planned_rr", 3.0))
+        cfg.auto_execute_paper = bool(data.get("auto_execute_paper", False))
+        cfg.new_entries_paused = bool(data.get("new_entries_paused", False))
         return cfg
 
     def to_dict(self) -> Dict[str, Any]:
@@ -79,6 +83,11 @@ class UserRiskConfig:
             "max_concurrent_positions": self.max_concurrent_positions,
             "leverage": self.leverage,
             "mode": self.mode,
+            "auto_execute_paper": self.auto_execute_paper,
+            "new_entries_paused": self.new_entries_paused,
+            "emergency_stop": self.emergency_stop,
+            "cash_buffer_pct": self.cash_buffer_pct,
+            "min_planned_rr": self.min_planned_rr,
         }
 
 
@@ -219,6 +228,8 @@ class RiskAndSizingEngine:
         violations = []
         if self.config.emergency_stop:
             violations.append("EMERGENCY_STOP")
+        if self.config.new_entries_paused:
+            violations.append("NEW_ENTRIES_PAUSED")
         if self.daily_realized_loss >= self.config.max_daily_loss:
             violations.append("DAILY_LOSS_BREACHED")
         if curr_positions_cnt >= self.config.max_concurrent_positions:
@@ -227,6 +238,32 @@ class RiskAndSizingEngine:
         req_cap = ticket.entry_price * ticket.quantity
         if (curr_exposure + req_cap) > self.config.max_open_exposure:
             violations.append("PORTFOLIO_EXPOSURE_EXCEEDED")
+
+        # Duplicate order / position prevention
+        if open_positions and ticket.symbol in open_positions:
+            violations.append("DUPLICATE_POSITION_EXISTS")
+        if pending_orders:
+            for o in pending_orders.values():
+                if o.get("symbol") == ticket.symbol and o.get("status") in ("OPEN", "PENDING"):
+                    violations.append("DUPLICATE_PENDING_ORDER_EXISTS")
+                    break
+
+        # Stop Loss & Take Profit structural sanity
+        is_long = ticket.side.upper() == "BUY"
+        if is_long:
+            if ticket.stop_loss >= ticket.entry_price or ticket.take_profit <= ticket.entry_price:
+                violations.append("INVALID_SL_TP_STRUCTURE")
+        else:
+            if ticket.stop_loss <= ticket.entry_price or ticket.take_profit >= ticket.entry_price:
+                violations.append("INVALID_SL_TP_STRUCTURE")
+
+        # Planned Net R:R minimum
+        if ticket.planned_rr < self.config.min_planned_rr:
+            violations.append("SUB_3R_NET_REWARD_RISK")
+
+        # Quantity validity
+        if ticket.quantity <= 0:
+            violations.append("INVALID_QUANTITY")
 
         if violations:
             return {
@@ -259,6 +296,11 @@ class RiskAndSizingEngine:
         if cfg.emergency_stop:
             reasons.append("EMERGENCY STOP is currently ACTIVE. All new trading is strictly suspended.")
             return SizingResult(False, reasons, warnings, 0.0, 0.0, 0.0, 0.0, "emergency_stop")
+
+        # ---------------- Gate 1b: Pause New Entries
+        if cfg.new_entries_paused:
+            reasons.append("New trade entries are currently PAUSED by user. Monitoring existing positions.")
+            return SizingResult(False, reasons, warnings, 0.0, 0.0, 0.0, 0.0, "new_entries_paused")
 
         # ---------------- Gate 2: Daily Loss Limit
         if realized_loss_today >= cfg.max_daily_loss:

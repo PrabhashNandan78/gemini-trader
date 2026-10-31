@@ -115,7 +115,7 @@ class PaperBrokerAdapter(BaseBrokerAdapter):
         return list(self.engine.orders.values())
 
     def place_order(self, ticket: OrderTicket, confirm_live: bool = False) -> Dict[str, Any]:
-        if self.emergency_halted:
+        if self.emergency_halted or (self.user_config and self.user_config.emergency_stop):
             return {
                 "success": False,
                 "reason": "Emergency halt is active. Reset required before trading.",

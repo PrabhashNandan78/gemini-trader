@@ -16,6 +16,7 @@ import random
 import re
 import socketserver
 import sys
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -34,7 +35,8 @@ from copilot.regime import (
 )
 from copilot.risk_engine import OrderTicket, RiskAndSizingEngine, UserRiskConfig
 from copilot.strategies import AdaptiveStrategyEngine
-from engine.market_data import MarketDataProvider, MarketDataError
+from engine.market_data import MarketDataError
+from copilot.market_data import LiveMarketDataManager, MarketDataProvider, merge_candle_bars
 
 
 class CopilotServerState:
@@ -54,6 +56,8 @@ class CopilotServerState:
             max_concurrent_positions=3,
             leverage=1.0,
             mode=mode,
+            auto_execute_paper=False,
+            new_entries_paused=False,
         )
         self.paper_engine = PaperTradingEngine(
             initial_balance=initial_balance,
@@ -66,15 +70,35 @@ class CopilotServerState:
             user_config=self.user_config,
             paper_engine=self.paper_engine,
         )
-        self.market_data = MarketDataProvider()
+        self.market_data = LiveMarketDataManager()
         self.strategy_engine = AdaptiveStrategyEngine()
+        self.last_executed_signals: Dict[Any, Any] = {}
+        self.active_context: Dict[str, Any] = {
+            "symbol": None,
+            "raw_symbol": None,
+            "interval": "15m",
+            "source": None,
+            "status": "TRADINGVIEW NOT SYNCHRONIZED",
+            "synced": False,
+            "updated_at": 0.0,
+            "unverified": True,
+        }
 
     def update_config(self, new_params: Dict[str, Any]) -> UserRiskConfig:
         for k, v in new_params.items():
             if hasattr(self.user_config, k):
-                # Type cast
-                field_type = type(getattr(self.user_config, k))
-                setattr(self.user_config, k, field_type(v))
+                field_val = getattr(self.user_config, k)
+                if isinstance(field_val, bool):
+                    if isinstance(v, str):
+                        setattr(self.user_config, k, v.lower() in ("true", "1", "yes"))
+                    else:
+                        setattr(self.user_config, k, bool(v))
+                elif isinstance(field_val, int):
+                    setattr(self.user_config, k, int(v))
+                elif isinstance(field_val, float):
+                    setattr(self.user_config, k, float(v))
+                else:
+                    setattr(self.user_config, k, str(v))
 
         # Re-sync broker if mode or broker name changed
         self.broker = create_broker_adapter(
@@ -83,6 +107,7 @@ class CopilotServerState:
             user_config=self.user_config,
             paper_engine=self.paper_engine,
         )
+        return self.user_config
         return self.user_config
 
 
@@ -492,6 +517,8 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_get_config()
         elif path == "/api/chart":
             self.handle_get_chart(query)
+        elif path == "/api/active_context":
+            self.handle_get_active_context()
         elif path == "/api/positions":
             self.handle_get_positions()
         elif path == "/api/orders":
@@ -521,12 +548,20 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/config":
             self.handle_post_config(payload)
+        elif path == "/api/active_context":
+            self.handle_post_active_context(payload)
         elif path == "/api/analyze":
             self.handle_post_analyze(payload)
         elif path == "/api/order":
             self.handle_post_order(payload)
         elif path == "/api/close_position":
             self.handle_post_close_position(payload)
+        elif path == "/api/close_all":
+            self.handle_post_close_all()
+        elif path == "/api/pause":
+            self.handle_post_pause(payload)
+        elif path == "/api/resume":
+            self.handle_post_resume()
         elif path == "/api/cancel_all":
             self.handle_post_cancel_all()
         elif path == "/api/emergency_stop":
@@ -558,6 +593,13 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             "open_orders_count": len(orders),
             "trades_count": len(state_snapshot.get("trade_history", [])),
             "emergency_halted": SERVER_STATE.broker.emergency_halted,
+            "auto_execute_paper": SERVER_STATE.user_config.auto_execute_paper,
+            "new_entries_paused": SERVER_STATE.user_config.new_entries_paused,
+            "max_daily_loss": SERVER_STATE.user_config.max_daily_loss,
+            "daily_realized_loss": SERVER_STATE.paper_engine.get_realized_loss_today(),
+            "max_concurrent_positions": SERVER_STATE.user_config.max_concurrent_positions,
+            "max_open_exposure": SERVER_STATE.user_config.max_open_exposure,
+            "current_open_exposure": SERVER_STATE.paper_engine.get_current_open_exposure(),
             "stats": state_snapshot.get("stats", {}),
         })
 
@@ -580,6 +622,97 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             "message": "Configuration updated successfully",
             "config": updated.to_dict(),
         })
+
+    def handle_get_active_context(self) -> None:
+        global SERVER_STATE
+        ctx = getattr(SERVER_STATE, "active_context", {}) or {}
+        updated_at = ctx.get("updated_at", 0.0)
+        now = time.time()
+        age_sec = round(now - updated_at, 1) if updated_at > 0 else 999999.0
+
+        if updated_at == 0.0 or age_sec > 60.0:
+            status = "TRADINGVIEW NOT SYNCHRONIZED"
+            synced = False
+            msg = "No active TradingView tab detected within the last 60 seconds."
+        elif ctx.get("unverified"):
+            status = ctx.get("status", "UNVERIFIED")
+            synced = False
+            msg = ctx.get("reason", "Chart context unverified")
+        else:
+            status = ctx.get("status", "SYNCHRONIZED")
+            synced = (status == "SYNCHRONIZED")
+            msg = "TradingView active chart synchronized"
+
+        self._send_json_response({
+            "success": True,
+            "synced": synced,
+            "status": status,
+            "message": msg,
+            "active_context": ctx,
+            "age_sec": age_sec,
+        })
+
+    def handle_post_active_context(self, payload: Dict[str, Any]) -> None:
+        global SERVER_STATE
+        raw_symbol = str(payload.get("symbol", "")).strip()
+        raw_interval = str(payload.get("interval", "15m")).strip().lower()
+        unverified = bool(payload.get("unverified", False))
+        reason = payload.get("reason")
+        source = payload.get("source", "tradingview")
+
+        allowed_intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "1h", "1d"]
+        if raw_interval not in allowed_intervals:
+            raw_interval = "15m"
+
+        if unverified or not raw_symbol or raw_symbol.upper() == "UNVERIFIED":
+            SERVER_STATE.active_context = {
+                "symbol": "UNVERIFIED",
+                "raw_symbol": raw_symbol,
+                "interval": raw_interval,
+                "source": source,
+                "status": "UNVERIFIED",
+                "unverified": True,
+                "reason": reason or "Chart context unverified",
+                "updated_at": time.time(),
+                "synced": False,
+            }
+            self._send_json_response({"success": True, "active_context": SERVER_STATE.active_context})
+            return
+
+        sym_info = normalize_market_symbol(raw_symbol)
+        if not sym_info.get("supported"):
+            reason_msg = sym_info.get("reason", f"Unsupported symbol: {raw_symbol}")
+            SERVER_STATE.active_context = {
+                "symbol": raw_symbol,
+                "raw_symbol": raw_symbol,
+                "interval": raw_interval,
+                "source": source,
+                "status": "UNSUPPORTED_INSTRUMENT",
+                "unverified": True,
+                "reason": reason_msg,
+                "updated_at": time.time(),
+                "synced": False,
+            }
+            self._send_json_response({"success": True, "active_context": SERVER_STATE.active_context})
+            return
+
+        # Valid supported instrument
+        SERVER_STATE.active_context = {
+            "symbol": sym_info["mapped_symbol"],
+            "raw_symbol": raw_symbol,
+            "display_name": sym_info.get("display_name", raw_symbol),
+            "market": sym_info.get("market", "NSE"),
+            "interval": raw_interval,
+            "source": source,
+            "status": "SYNCHRONIZED",
+            "unverified": False,
+            "is_proxy": sym_info.get("is_proxy", False),
+            "proxy_target": sym_info.get("proxy_target"),
+            "proxy_notice": sym_info.get("proxy_notice"),
+            "updated_at": time.time(),
+            "synced": True,
+        }
+        self._send_json_response({"success": True, "active_context": SERVER_STATE.active_context})
 
     def handle_get_chart(self, query: Dict[str, List[str]]) -> None:
         global SERVER_STATE
@@ -632,6 +765,7 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Fetch real candles from MarketDataProvider
         bars = []
+        meta = {}
         try:
             _, fetched_bars, meta = SERVER_STATE.market_data.get_bars(symbol=mapped_symbol, range_str=range_str, interval=interval)
             if fetched_bars:
@@ -705,13 +839,30 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "adx": clean_float(adx_series[i]),
             })
 
+        health_info = meta.get("data_health") if isinstance(meta, dict) else None
+        if not health_info and hasattr(SERVER_STATE.market_data, "get_data_health"):
+            health_info = SERVER_STATE.market_data.get_data_health(mapped_symbol, interval)
+        if not health_info:
+            health_info = {
+                "status": "LIVE",
+                "is_stale": False,
+                "provider": source_label,
+                "last_updated_iso": chart_bars[-1]["datetime"] if chart_bars else None,
+                "last_updated_ts": chart_bars[-1]["time"] if chart_bars else None,
+                "data_age_sec": max(0, int(time.time() - (chart_bars[-1]["time"] if chart_bars else time.time()))),
+                "candle_count": len(chart_bars),
+                "error": None,
+            }
+
+        feed_label = health_info.get("provider", source_label)
+
         self._send_json_response({
             "symbol": raw_symbol,
             "mapped_symbol": mapped_symbol,
             "display_name": sym_info.get("display_name", raw_symbol),
             "market": market,
-            "source": source_label,
-            "feed_label": source_label,
+            "source": feed_label,
+            "feed_label": feed_label,
             "interval": interval,
             "is_proxy": sym_info.get("is_proxy", False),
             "proxy_target": sym_info.get("proxy_target"),
@@ -719,6 +870,7 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             "regime": regime_info,
             "bars_count": len(chart_bars),
             "bars": chart_bars,
+            "data_health": health_info,
         })
 
     def handle_post_analyze(self, payload: Dict[str, Any]) -> None:
@@ -774,8 +926,9 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Fetch real bars
         bars = []
+        meta = {}
         try:
-            _, fetched_bars, _ = SERVER_STATE.market_data.get_bars(symbol=mapped_symbol, range_str=range_str, interval=interval)
+            _, fetched_bars, meta = SERVER_STATE.market_data.get_bars(symbol=mapped_symbol, range_str=range_str, interval=interval)
             if fetched_bars and len(fetched_bars) >= 20:
                 bars = fetched_bars
         except Exception as e:
@@ -821,6 +974,55 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             }, status=404)
             return
 
+        # Feed latest tick into paper engine to trigger pending stops/targets
+        latest_bar = bars[-1]
+        events = SERVER_STATE.paper_engine.process_market_tick(mapped_symbol, latest_bar)
+
+        # Stale data check
+        now_ts = time.time()
+        ts_val = latest_bar.get("timestamp", 0)
+        if isinstance(ts_val, (int, float)):
+            bar_ts = float(ts_val)
+        elif isinstance(ts_val, str):
+            try:
+                bar_ts = datetime.fromisoformat(ts_val.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                try:
+                    bar_ts = float(ts_val)
+                except Exception:
+                    bar_ts = now_ts
+        else:
+            bar_ts = now_ts
+
+        interval_sec = {
+            "1m": 60, "2m": 120, "5m": 300, "15m": 900,
+            "30m": 1800, "60m": 3600, "1h": 3600, "1d": 86400
+        }.get(interval, 900)
+
+        health_info = meta.get("data_health") if isinstance(meta, dict) else None
+        if not health_info and hasattr(SERVER_STATE.market_data, "get_data_health"):
+            health_info = SERVER_STATE.market_data.get_data_health(mapped_symbol, interval)
+        if not health_info:
+            health_info = {
+                "status": "LIVE",
+                "is_stale": False,
+                "provider": source_label,
+                "last_updated_iso": latest_bar.get("datetime_local"),
+                "last_updated_ts": latest_bar.get("timestamp"),
+                "data_age_sec": max(0, int(now_ts - bar_ts)),
+                "candle_count": len(bars),
+                "error": None,
+            }
+
+        is_stale = False
+        stale_msg = None
+        if health_info and health_info.get("is_stale"):
+            is_stale = True
+            stale_msg = f"Market data feed is STALE ({health_info.get('status')}: age {health_info.get('data_age_sec', 0)}s). New paper entries blocked."
+        elif market == "CRYPTO" and (now_ts - bar_ts) > (interval_sec * 4):
+            is_stale = True
+            stale_msg = f"Market data feed is STALE (last candle: {latest_bar.get('datetime_local', bar_ts)}, latency > {round((now_ts - bar_ts)/60)}m)."
+
         # Run adaptive strategy engine
         analysis = SERVER_STATE.strategy_engine.analyze_and_generate_ticket(
             bars=bars,
@@ -829,21 +1031,141 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             user_config=SERVER_STATE.user_config,
         )
 
-        # Feed latest tick into paper engine to trigger pending stops/targets
-        latest_bar = bars[-1]
-        events = SERVER_STATE.paper_engine.process_market_tick(mapped_symbol, latest_bar)
+        if is_stale and stale_msg:
+            analysis["decision"] = "NO TRADE"
+            analysis["ticket"] = None
+            analysis.setdefault("reasons", []).insert(0, stale_msg)
+
+        # Automatic paper execution check
+        auto_exec_cfg = SERVER_STATE.user_config.auto_execute_paper
+        if "auto_execute" in payload:
+            auto_exec_cfg = bool(payload["auto_execute"])
+
+        strat_name = analysis.get("selected_strategy", "Unknown")
+        candle_sig = (mapped_symbol, interval, latest_bar.get("timestamp"), strat_name)
+
+        if is_stale and stale_msg:
+            analysis["auto_execution"] = {
+                "enabled": auto_exec_cfg,
+                "executed": False,
+                "reason": stale_msg,
+            }
+        elif SERVER_STATE.user_config.emergency_stop or SERVER_STATE.broker.emergency_halted:
+            analysis["auto_execution"] = {
+                "enabled": auto_exec_cfg,
+                "executed": False,
+                "reason": "Emergency stop is active. Automated trading is halted.",
+            }
+        elif SERVER_STATE.user_config.new_entries_paused:
+            analysis["auto_execution"] = {
+                "enabled": auto_exec_cfg,
+                "executed": False,
+                "reason": "New trade entries are currently PAUSED by user.",
+            }
+        elif mapped_symbol in SERVER_STATE.paper_engine.positions:
+            analysis["auto_execution"] = {
+                "enabled": auto_exec_cfg,
+                "executed": False,
+                "reason": f"Position already open for {mapped_symbol}. Duplicate entries prevented.",
+            }
+        elif SERVER_STATE.last_executed_signals.get(mapped_symbol) == latest_bar.get("timestamp") or candle_sig in SERVER_STATE.last_executed_signals:
+            analysis["auto_execution"] = {
+                "enabled": auto_exec_cfg,
+                "executed": False,
+                "reason": f"Duplicate signal already executed for candle timestamp {latest_bar.get('timestamp')}.",
+            }
+        else:
+            is_trade = analysis.get("decision") == "TRADE"
+            ticket_data = analysis.get("ticket")
+
+            if is_trade and ticket_data:
+                if auto_exec_cfg:
+                    ticket_obj = OrderTicket.from_dict(ticket_data)
+                    order_res = SERVER_STATE.broker.place_order(ticket_obj, confirm_live=False)
+                    if order_res.get("success"):
+                        SERVER_STATE.last_executed_signals[mapped_symbol] = latest_bar.get("timestamp")
+                        SERVER_STATE.last_executed_signals[candle_sig] = order_res.get("order_id")
+                        analysis["auto_execution"] = {
+                            "enabled": True,
+                            "executed": True,
+                            "order_id": order_res.get("order_id"),
+                            "fill_price": order_res.get("fill_price"),
+                            "quantity": order_res.get("quantity"),
+                            "entry_friction": order_res.get("entry_friction"),
+                        }
+                        events.append({
+                            "event": "AUTO_PAPER_ORDER_FILLED",
+                            "order_id": order_res.get("order_id"),
+                            "symbol": mapped_symbol,
+                            "quantity": order_res.get("quantity"),
+                            "fill_price": order_res.get("fill_price"),
+                        })
+                    else:
+                        analysis["auto_execution"] = {
+                            "enabled": True,
+                            "executed": False,
+                            "reason": order_res.get("reason", "Order rejected by risk gates."),
+                            "violations": order_res.get("violations", []),
+                        }
+                else:
+                    analysis["auto_execution"] = {
+                        "enabled": False,
+                        "executed": False,
+                        "status": "MANUAL_APPROVAL_REQUIRED",
+                        "reason": "Auto Paper Execution disabled. Manual approval required.",
+                    }
+            else:
+                analysis["auto_execution"] = {
+                    "enabled": auto_exec_cfg,
+                    "executed": False,
+                    "status": "NO_TRADE_SETUP",
+                    "reason": (analysis.get("reasons") and analysis["reasons"][0]) or "No trade setup.",
+                }
+
+        feed_label = health_info.get("provider", source_label)
 
         self._send_json_response({
             "symbol": raw_symbol,
             "mapped_symbol": mapped_symbol,
             "display_name": sym_info.get("display_name", raw_symbol),
-            "feed_label": source_label,
+            "feed_label": feed_label,
             "interval": interval,
             "is_proxy": sym_info.get("is_proxy", False),
             "proxy_target": sym_info.get("proxy_target"),
             "proxy_notice": sym_info.get("proxy_notice"),
             "analysis": analysis,
             "market_tick_events": events,
+            "stale_data_warning": stale_msg,
+            "data_health": health_info,
+        })
+
+    def handle_post_close_all(self) -> None:
+        global SERVER_STATE
+        res = SERVER_STATE.paper_engine.close_all_positions(reason="MANUAL_CLOSE_ALL")
+        self._send_json_response(res)
+
+    def handle_post_pause(self, payload: Dict[str, Any]) -> None:
+        global SERVER_STATE
+        if "paused" in payload:
+            SERVER_STATE.user_config.new_entries_paused = bool(payload["paused"])
+        else:
+            SERVER_STATE.user_config.new_entries_paused = True
+        self._send_json_response({
+            "success": True,
+            "new_entries_paused": SERVER_STATE.user_config.new_entries_paused,
+            "message": "New entries paused" if SERVER_STATE.user_config.new_entries_paused else "New entries active",
+        })
+
+    def handle_post_resume(self) -> None:
+        global SERVER_STATE
+        SERVER_STATE.broker.emergency_halted = False
+        SERVER_STATE.user_config.emergency_stop = False
+        SERVER_STATE.user_config.new_entries_paused = False
+        self._send_json_response({
+            "success": True,
+            "emergency_halted": False,
+            "new_entries_paused": False,
+            "message": "System resumed. All circuit breakers cleared.",
         })
 
     def handle_post_order(self, payload: Dict[str, Any]) -> None:
@@ -856,6 +1178,17 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         ticket = OrderTicket.from_dict(ticket_data)
+
+        # Stale data safety check: if cached market data for this symbol is explicitly stale, block new paper orders
+        health = SERVER_STATE.market_data.get_data_health(ticket.symbol, "15m") if hasattr(SERVER_STATE.market_data, "get_data_health") else None
+        if health and health.get("candle_count", 0) > 0 and health.get("is_stale"):
+            self._send_json_response({
+                "success": False,
+                "reason": f"Stale market data detected ({health.get('status')}, age {health.get('data_age_sec', 0)}s). Orders blocked until fresh data arrives.",
+                "status": "STALE_DATA"
+            }, status=400)
+            return
+
         result = SERVER_STATE.broker.place_order(ticket, confirm_live=confirm_live)
         self._send_json_response(result)
 

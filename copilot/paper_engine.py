@@ -139,7 +139,8 @@ class PaperTradingEngine:
         Market orders are filled immediately with realistic slippage and statutory costs.
         Limit and stop orders are added to pending orders.
         """
-        # Validate ticket through risk engine
+        # Synchronize dynamic risk metrics before validation
+        self.risk_engine.daily_realized_loss = self.get_realized_loss_today()
         validation = self.risk_engine.validate_order(
             ticket=ticket,
             open_positions=self.positions,
@@ -256,27 +257,29 @@ class PaperTradingEngine:
 
         pos["current_price"] = close
 
-        # Check Stop Loss first (conservative risk principle)
+        # Check Stop Loss and Take Profit independently to detect ambiguous bars
         sl_hit = False
         tp_hit = False
 
         if pos["side"] == "BUY":
             if low <= pos["stop_loss"]:
                 sl_hit = True
-            elif high >= pos["take_profit"]:
+            if high >= pos["take_profit"]:
                 tp_hit = True
         else:  # SELL
             if high >= pos["stop_loss"]:
                 sl_hit = True
-            elif low <= pos["take_profit"]:
+            if low <= pos["take_profit"]:
                 tp_hit = True
 
+        # Conservative execution: if an ambiguous candle touches both Stop-Loss and Take-Profit,
+        # prioritize defensive risk management and assume Stop-Loss was triggered first.
         if sl_hit:
             exit_price = pos["stop_loss"]
             closed = self.close_position(
                 symbol=symbol,
                 exit_price=exit_price,
-                reason="STOP_LOSS",
+                reason="STOP_LOSS" if not tp_hit else "STOP_LOSS_AMBIGUOUS_BAR",
                 exit_time=timestamp,
             )
             events.append({"event": "STOP_LOSS_TRIGGERED", "details": closed})
@@ -385,6 +388,52 @@ class PaperTradingEngine:
             "balance": round(self.balance, 2),
             "equity": round(self.equity, 2),
         }
+
+    def close_all_positions(self, reason: str = "MANUAL_CLOSE_ALL") -> Dict[str, Any]:
+        """Close all open paper positions at their current price."""
+        results = []
+        for symbol, pos in list(self.positions.items()):
+            res = self.close_position(
+                symbol=symbol,
+                exit_price=pos["current_price"],
+                reason=reason,
+            )
+            results.append({"symbol": symbol, "result": res})
+        return {
+            "success": True,
+            "closed_count": len(results),
+            "results": results,
+            "balance": round(self.balance, 2),
+            "equity": round(self.equity, 2),
+        }
+
+    def get_realized_loss_today(self) -> float:
+        """Calculate total realized loss for trades closed today (UTC date)."""
+        today_date = datetime.now(timezone.utc).date()
+        today_losses = 0.0
+        for trade in self.trade_history:
+            exit_time_str = trade.get("exit_time")
+            if not exit_time_str:
+                continue
+            try:
+                if isinstance(exit_time_str, (int, float)):
+                    t_date = datetime.fromtimestamp(float(exit_time_str), tz=timezone.utc).date()
+                elif "T" in str(exit_time_str):
+                    t_date = datetime.fromisoformat(str(exit_time_str).replace("Z", "+00:00")).date()
+                else:
+                    t_date = datetime.strptime(str(exit_time_str)[:10], "%Y-%m-%d").date()
+                if t_date == today_date and trade.get("net_pnl", 0.0) < 0:
+                    today_losses += abs(trade["net_pnl"])
+            except Exception:
+                continue
+        return round(today_losses, 2)
+
+    def get_current_open_exposure(self) -> float:
+        """Calculate total capital committed to active open positions."""
+        return sum(
+            float(pos.get("entry_price", 0.0)) * float(pos.get("quantity", 0.0))
+            for pos in self.positions.values()
+        )
 
     def emergency_stop(self) -> Dict[str, Any]:
         """Emergency circuit breaker: cancels all pending orders and liquidates all positions."""

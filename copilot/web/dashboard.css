@@ -506,6 +506,87 @@ body.dark-theme {
   border: 1px solid var(--red);
 }
 
+/* DATA HEALTH STATUS BAR */
+.data-health-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 6px 12px;
+  background: #0d121d;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.health-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.health-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.health-val {
+  color: var(--text-white);
+  font-weight: 600;
+}
+
+.health-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.health-badge.status-live {
+  background: rgba(0, 230, 118, 0.15);
+  color: #00e676;
+  border: 1px solid #00e676;
+}
+
+.health-badge.status-stale {
+  background: rgba(255, 170, 0, 0.18);
+  color: #ffaa00;
+  border: 1px solid #ffaa00;
+}
+
+.health-badge.status-disconnected {
+  background: rgba(255, 61, 113, 0.2);
+  color: #ff3d71;
+  border: 1px solid #ff3d71;
+}
+
+.health-badge.status-unsupported {
+  background: rgba(139, 155, 180, 0.15);
+  color: #8b9bb4;
+  border: 1px solid #8b9bb4;
+}
+
+.health-badge.sync-active {
+  background: rgba(0, 210, 255, 0.15);
+  color: #00d2ff;
+  border: 1px solid #00d2ff;
+}
+
+.health-badge.sync-waiting {
+  background: rgba(255, 170, 0, 0.15);
+  color: #ffaa00;
+  border: 1px solid #ffaa00;
+}
+
+.health-badge.sync-off {
+  background: rgba(139, 155, 180, 0.15);
+  color: #8b9bb4;
+  border: 1px solid #8b9bb4;
+}
+
 .chart-controls {
   display: flex;
   align-items: center;
