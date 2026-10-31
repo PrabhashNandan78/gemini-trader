@@ -116,3 +116,4 @@ Simulated execution environment:
 ### Layer 7: Audit Logger
 - Every tool invocation and paper trade appends a timestamped JSON line to `trader/state/audit.jsonl`.
 - Ensures transparency, auditability, and post-trade performance review.
+

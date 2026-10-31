@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Trading Copilot</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="popup-body">
+  <div class="header">
+    <div class="logo">
+      <span class="logo-icon">⚡</span>
+      <span class="title">AI COPILOT</span>
+    </div>
+    <span class="badge" id="modeBadge">PAPER</span>
+  </div>
+
+  <div class="status-card">
+    <div class="metric-row">
+      <span class="label">Balance:</span>
+      <strong id="balanceVal">₹100,000.00</strong>
+    </div>
+    <div class="metric-row">
+      <span class="label">Regime:</span>
+      <span id="regimeVal" class="regime-text">DETECTING...</span>
+    </div>
+  </div>
+
+  <div class="symbol-box">
+    <span class="label">Active Symbol:</span>
+    <div class="symbol-input-group">
+      <input type="text" id="symbolInput" value="RELIANCE.NS" class="symbol-input">
+      <button id="btnSyncTab" class="btn btn-sm btn-outline" title="Sync from TradingView Tab">🔄 Tab</button>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="btnAnalyze" class="btn btn-primary btn-block">⚡ Analyze Setup (3:1 R:R)</button>
+  </div>
+
+  <div id="signalContainer" class="ticket-card" style="display: none;">
+    <div class="ticket-header">
+      <span class="badge" id="decisionBadge">TRADE</span>
+      <span id="strategyName" class="strategy-label">TrendFollowing</span>
+    </div>
+    <div class="ticket-details">
+      <div class="detail-row"><span>Entry:</span> <strong id="tEntry">₹0.00</strong></div>
+      <div class="detail-row"><span>Stop Loss:</span> <strong id="tSL" class="text-danger">₹0.00</strong></div>
+      <div class="detail-row"><span>Take Profit:</span> <strong id="tTP" class="text-success">₹0.00</strong></div>
+      <div class="detail-row"><span>Net R:R:</span> <strong id="tRR" class="text-accent">3.20 R</strong></div>
+      <div class="detail-row"><span>Quantity:</span> <strong id="tQty">0</strong></div>
+    </div>
+    <div id="reasonsBox" class="reasons-box" style="display: none;"></div>
+    <button id="btnExecute" class="btn btn-success btn-block" style="margin-top: 8px;">🚀 Execute Order</button>
+  </div>
+
+  <div class="footer-actions">
+    <a href="http://127.0.0.1:8765/" target="_blank" class="btn btn-secondary btn-sm">Open Dashboard</a>
+    <button id="btnEmergencyStop" class="btn btn-danger btn-sm">🛑 Kill Switch</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

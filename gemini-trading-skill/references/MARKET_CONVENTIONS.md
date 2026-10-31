@@ -112,3 +112,4 @@ This document establishes the official market conventions, symbols, trading sess
 - **Indian Regulations**:
   - Regulated by SEBI (Securities and Exchange Board of India).
   - Circuit limits (upper and lower price bands: typically 5%, 10%, or 20%) apply to Indian equities.
+

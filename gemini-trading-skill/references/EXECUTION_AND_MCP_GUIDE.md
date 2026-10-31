@@ -73,3 +73,4 @@ The file `gemini_interface.py` is pre-engineered for MCP tool dispatching:
 - `get_market_clock(symbol)`
 
 When an MCP host is connected, the model can execute these tools autonomously on your machine with your explicit permission.
+

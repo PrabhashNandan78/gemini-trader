@@ -1,0 +1,67 @@
+{
+  "version": "1.0",
+  "mode": "paper",
+  "last_updated": "2026-10-31T15:02:51.448578+00:00",
+  "currency": "INR",
+  "initial_balance": 100000.0,
+  "balance": 99976.663,
+  "equity": 99976.663,
+  "peak_equity": 100000.0,
+  "max_drawdown_pct": 0.0233,
+  "positions": {},
+  "orders": {
+    "paper_ord_51e2f8955d": {
+      "order_id": "paper_ord_51e2f8955d",
+      "symbol": "RELIANCE.NS",
+      "market": "NSE",
+      "side": "BUY",
+      "quantity": 5.0,
+      "requested_price": 2500.0,
+      "fill_price": 2501.0,
+      "slippage": 1.0,
+      "status": "FILLED",
+      "created_at": "2026-10-31T15:02:51.442754+00:00",
+      "filled_at": "2026-10-31T15:02:51.442754+00:00",
+      "strategy": "TrendFollowing",
+      "friction_paid": 6.715
+    }
+  },
+  "trade_history": [
+    {
+      "trade_id": "trade_4baa9abc",
+      "position_id": "pos_ff4ba85b",
+      "symbol": "RELIANCE.NS",
+      "market": "NSE",
+      "side": "BUY",
+      "quantity": 5.0,
+      "entry_price": 2501.0,
+      "exit_price": 2499.9996,
+      "stop_loss": 2450.0,
+      "take_profit": 2670.0,
+      "entry_time": "2026-10-31T15:02:51.442754+00:00",
+      "exit_time": "2026-10-31T15:02:51.445760+00:00",
+      "gross_pnl": -5.0,
+      "total_friction": 18.34,
+      "net_pnl": -23.34,
+      "return_pct": -0.19,
+      "r_multiple": -0.09,
+      "exit_reason": "EMERGENCY_STOP",
+      "strategy": "TrendFollowing"
+    }
+  ],
+  "stats": {
+    "total_trades": 1,
+    "winning_trades": 0,
+    "losing_trades": 1,
+    "breakeven_trades": 0,
+    "win_rate_pct": 0.0,
+    "profit_factor": 0.0,
+    "gross_profit": 0,
+    "gross_loss": 23.34,
+    "net_pnl": -23.34,
+    "average_r": -0.09,
+    "average_win": 0.0,
+    "average_loss": 23.34,
+    "max_drawdown_pct": 0.02
+  }
+}

@@ -189,3 +189,4 @@ To ensure clear user expectations, observe the platform capabilities:
   - `python run_trader.py backtest --symbol RELIANCE.NS --replays 10000`
   - `python run_trader.py paper-trade --symbol BTC-USD --execute`
 - Reference: See [references/EXECUTION_AND_MCP_GUIDE.md](references/EXECUTION_AND_MCP_GUIDE.md) for terminal commands, MCP server integration, and automated tool connectivity.
+

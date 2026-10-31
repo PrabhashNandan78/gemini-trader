@@ -105,3 +105,4 @@ Before an order can receive a `PASS` verdict, it must pass 8 independent checks:
   - Capped Units: $2500 / 77100 = 0.0324$ BTC.
   - Sized Position: **0.0324 BTC** (Value: $2,498.04, Actual risk at stop: $0.0324 \times 800 = \$25.92$).
   - Target (2R): $77100 + (2 \times 800) = \$78,700.00$.
+

@@ -89,3 +89,4 @@ Every trade proposal must be structured as a 3-part bracket order containing ent
    - For US equities, flatten open day-trade positions by 15:55 ET.
    - For Cryptocurrencies, trades may stay open across 24/7 boundaries, but daily risk tracking resets at 00:00 UTC.
 4. **Trailing Stops**: After price reaches 1.0R in profit, the stop loss may be trailed to breakeven ($E$) to protect principal.
+

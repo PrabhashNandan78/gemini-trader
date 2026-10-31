@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Trading Copilot | Adaptive Multi-Market Automated Trading</title>
+  <link rel="stylesheet" href="dashboard.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
+</head>
+<body class="dark-theme">
+  <!-- TOP HEADER -->
+  <header class="top-header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">AI TRADING COPILOT</span>
+        <span class="version-badge">v2.0</span>
+      </div>
+      <div class="regime-pill" id="regimeBadge">
+        <span class="pulse-dot"></span>
+        <span id="regimeText">DETECTING REGIME...</span>
+      </div>
+    </div>
+
+    <div class="header-center">
+      <div class="metric-item">
+        <span class="metric-label">BALANCE</span>
+        <span class="metric-value" id="valBalance">₹100,000.00</span>
+      </div>
+      <div class="metric-item">
+        <span class="metric-label">EQUITY</span>
+        <span class="metric-value" id="valEquity">₹100,000.00</span>
+      </div>
+      <div class="metric-item">
+        <span class="metric-label">WIN RATIO</span>
+        <span class="metric-value text-accent" id="valWinRate">0.0%</span>
+      </div>
+      <div class="metric-item">
+        <span class="metric-label">PROFIT FACTOR</span>
+        <span class="metric-value" id="valProfitFactor">0.00</span>
+      </div>
+      <div class="metric-item">
+        <span class="metric-label">MAX DRAWDOWN</span>
+        <span class="metric-value text-warning" id="valMaxDrawdown">0.00%</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div class="mode-pill paper-mode" id="modeBadge">
+        <span id="modeText">PAPER TRADING</span>
+      </div>
+      <button class="btn btn-secondary" id="btnOpenSettings" title="User Risk Settings">⚙️ Risk Config</button>
+      <button class="btn btn-danger" id="btnEmergencyStop" title="Immediate Emergency Stop">🛑 KILL SWITCH</button>
+    </div>
+  </header>
+
+  <!-- MAIN CONTAINER -->
+  <main class="main-layout">
+    <!-- LEFT SIDEBAR: WATCHLIST & SIGNAL ANALYSIS -->
+    <aside class="sidebar-panel">
+      <!-- WATCHLIST CARD -->
+      <div class="card watchlist-card">
+        <div class="card-header">
+          <h3>Markets & Watchlist</h3>
+          <div class="market-selector-tabs">
+            <button class="tab-btn active" data-market="NSE">NSE</button>
+            <button class="tab-btn" data-market="CRYPTO">Crypto</button>
+            <button class="tab-btn" data-market="US">US</button>
+          </div>
+        </div>
+        <div class="card-body no-padding">
+          <ul class="watchlist-items" id="watchlistContainer">
+            <!-- Dynamically populated -->
+          </ul>
+        </div>
+      </div>
+
+      <!-- 3:1 R:R COPILOT TICKET CARD -->
+      <div class="card signal-card">
+        <div class="card-header">
+          <h3>Adaptive Signal & 3:1 Ticket</h3>
+          <button class="btn btn-sm btn-primary" id="btnAnalyzeSetup">⚡ Analyze Setup</button>
+        </div>
+        <div class="card-body">
+          <div id="signalEmptyState" class="text-muted text-center" style="padding: 20px 0;">
+            Click <strong>Analyze Setup</strong> to detect market regime and generate a verified &ge; 3.0:1 Net R:R order ticket.
+          </div>
+
+          <div id="signalDetails" style="display: none;">
+            <div class="signal-header-row">
+              <span class="badge" id="signalDecision">NO TRADE</span>
+              <span class="strategy-badge" id="signalStrategy">TrendFollowing</span>
+            </div>
+
+            <div class="ticket-grid">
+              <div class="ticket-cell">
+                <span class="cell-label">SYMBOL</span>
+                <span class="cell-value" id="ticketSymbol">RELIANCE.NS</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">SIDE</span>
+                <span class="cell-value" id="ticketSide">BUY</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">ENTRY</span>
+                <span class="cell-value" id="ticketEntry">₹0.00</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">STOP LOSS</span>
+                <span class="cell-value text-danger" id="ticketSL">₹0.00</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">TAKE PROFIT (3R)</span>
+                <span class="cell-value text-success" id="ticketTP">₹0.00</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">PLANNED NET R:R</span>
+                <span class="cell-value text-accent font-bold" id="ticketRR">3.20 R</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">QUANTITY</span>
+                <span class="cell-value" id="ticketQty">0</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">CAPITAL ALLOCATED</span>
+                <span class="cell-value" id="ticketCapital">₹0.00</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">RISK AT STAKE</span>
+                <span class="cell-value text-warning" id="ticketRisk">₹0.00</span>
+              </div>
+              <div class="ticket-cell">
+                <span class="cell-label">EST. FRICTION & TAXES</span>
+                <span class="cell-value text-muted" id="ticketFriction">₹0.00</span>
+              </div>
+            </div>
+
+            <div class="reasons-box" id="ticketReasonsBox" style="display: none;">
+              <span class="reasons-title">System Analysis:</span>
+              <p id="ticketReasonsText" class="reasons-content"></p>
+            </div>
+
+            <div class="ticket-actions">
+              <button class="btn btn-success btn-block" id="btnExecuteOrder" disabled>
+                🚀 Execute Order (Paper)
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- CENTER & RIGHT: INDEPENDENT CHART & TRADE LOGS -->
+    <section class="content-panel">
+      <!-- CHART VIEWER CARD -->
+      <div class="card chart-card">
+        <div class="card-header chart-header">
+          <div class="chart-title-group">
+            <h2 id="chartSymbol">RELIANCE.NS</h2>
+            <span class="chart-subtitle" id="chartInterval">5m Intraday</span>
+            <span class="chart-badge" id="chartDataBadge">Live Data</span>
+          </div>
+          <div class="chart-controls">
+            <span class="indicator-tag ema9-tag">EMA 9</span>
+            <span class="indicator-tag ema21-tag">EMA 21</span>
+            <span class="indicator-tag ema50-tag">EMA 50</span>
+            <span class="indicator-tag bb-tag">Bollinger (20,2)</span>
+            <button class="btn btn-sm btn-outline" id="btnRefreshChart">↻ Refresh</button>
+          </div>
+        </div>
+        <div class="card-body chart-body">
+          <div class="canvas-wrapper">
+            <canvas id="chartCanvas"></canvas>
+            <div id="chartTooltip" class="chart-tooltip" style="display: none;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BOTTOM TABS: POSITIONS, ORDERS, TRADES -->
+      <div class="card tabs-card">
+        <div class="card-header tabs-header">
+          <div class="tab-nav">
+            <button class="tab-link active" data-tab="tabPositions">Open Positions (<span id="countPositions">0</span>)</button>
+            <button class="tab-link" data-tab="tabOrders">Pending Orders (<span id="countOrders">0</span>)</button>
+            <button class="tab-link" data-tab="tabTrades">Closed Trades & Performance (<span id="countTrades">0</span>)</button>
+          </div>
+          <button class="btn btn-sm btn-outline-danger" id="btnResetHistory">Reset Account</button>
+        </div>
+
+        <div class="card-body tabs-body">
+          <!-- POSITIONS TAB -->
+          <div class="tab-pane active" id="tabPositions">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Qty</th>
+                  <th>Entry Price</th>
+                  <th>Current Price</th>
+                  <th>Stop Loss</th>
+                  <th>Take Profit (3R)</th>
+                  <th>Unrealized P&L</th>
+                  <th>Return %</th>
+                  <th>Strategy</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="positionsTableBody">
+                <tr><td colspan="11" class="text-center text-muted">No open positions.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- ORDERS TAB -->
+          <div class="tab-pane" id="tabOrders">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Order ID</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Quantity</th>
+                  <th>Requested Price</th>
+                  <th>Fill Price</th>
+                  <th>Status</th>
+                  <th>Time</th>
+                  <th>Strategy</th>
+                </tr>
+              </thead>
+              <tbody id="ordersTableBody">
+                <tr><td colspan="9" class="text-center text-muted">No pending orders.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- TRADES TAB -->
+          <div class="tab-pane" id="tabTrades">
+            <div class="trade-stats-bar">
+              <div class="stat-box"><span class="stat-k">Total Trades:</span> <strong id="statTotalTrades">0</strong></div>
+              <div class="stat-box"><span class="stat-k">Wins / Losses:</span> <strong id="statWinLoss">0 / 0</strong></div>
+              <div class="stat-box"><span class="stat-k">Win Rate:</span> <strong id="statWinRatePct" class="text-accent">0%</strong></div>
+              <div class="stat-box"><span class="stat-k">Profit Factor:</span> <strong id="statProfitFactor">0.00</strong></div>
+              <div class="stat-box"><span class="stat-k">Average R:</span> <strong id="statAvgR">0.00 R</strong></div>
+              <div class="stat-box"><span class="stat-k">Net Realized P&L:</span> <strong id="statNetPnL">₹0.00</strong></div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Trade ID</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Qty</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>Gross P&L</th>
+                  <th>Friction</th>
+                  <th>Net P&L</th>
+                  <th>R Achieved</th>
+                  <th>Exit Reason</th>
+                </tr>
+              </thead>
+              <tbody id="tradesTableBody">
+                <tr><td colspan="11" class="text-center text-muted">No trade history yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- USER RISK SETTINGS MODAL -->
+  <div class="modal-overlay" id="modalSettings" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>User Risk & Execution Parameters</h3>
+        <button class="btn-close" id="btnCloseSettings">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="formSettings" class="settings-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Trading Mode</label>
+              <select id="cfgMode" class="form-control">
+                <option value="paper">Paper Trading (Safe Simulation)</option>
+                <option value="live">Live Trading (Authorized Broker API)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Broker Adapter</label>
+              <select id="cfgBroker" class="form-control">
+                <option value="PAPER">Paper Trading Engine</option>
+                <option value="ZERODHA">Zerodha Kite (NSE)</option>
+                <option value="ALPACA">Alpaca Markets (US/Crypto)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Account Balance</label>
+              <input type="number" id="cfgBalance" class="form-control" step="1000" min="1000">
+            </div>
+            <div class="form-group">
+              <label>Currency</label>
+              <select id="cfgCurrency" class="form-control">
+                <option value="INR">INR (₹)</option>
+                <option value="USD">USD ($)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Max Risk Per Trade (%)</label>
+              <input type="number" id="cfgMaxRiskPct" class="form-control" step="0.1" min="0.1" max="5.0">
+            </div>
+            <div class="form-group">
+              <label>Max Daily Loss Limit</label>
+              <input type="number" id="cfgMaxDailyLoss" class="form-control" step="500" min="500">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Min Allocation Per Trade</label>
+              <input type="number" id="cfgMinAllocation" class="form-control" step="100" min="1">
+            </div>
+            <div class="form-group">
+              <label>Max Allocation Per Trade</label>
+              <input type="number" id="cfgMaxAllocation" class="form-control" step="1000" min="1000">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>Max Open Portfolio Exposure</label>
+              <input type="number" id="cfgMaxExposure" class="form-control" step="1000" min="1000">
+            </div>
+            <div class="form-group">
+              <label>Max Concurrent Positions</label>
+              <input type="number" id="cfgMaxPositions" class="form-control" step="1" min="1" max="10">
+            </div>
+          </div>
+
+          <div class="alert-box alert-warning" id="liveWarningBox" style="display: none;">
+            ⚠️ <strong>LIVE TRADING NOTICE:</strong> Live execution requires pre-configured API keys/tokens in the server environment. Orders will only execute if confirm_live is explicitly authorized.
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCancelSettings">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveSettings">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESET ACCOUNT MODAL -->
+  <div class="modal-overlay" id="modalReset" style="display: none;">
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h3>Reset Paper Account</h3>
+        <button class="btn-close" id="btnCloseReset">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to completely reset the paper trading account?</p>
+        <p class="text-danger">This will clear all open paper positions, pending orders, and trade statistics.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCancelReset">Cancel</button>
+        <button class="btn btn-danger" id="btnConfirmReset">Confirm Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

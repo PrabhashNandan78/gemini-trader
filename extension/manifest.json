@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "AI Trading Copilot - Adaptive Multi-Market Assistant",
+  "version": "2.0.0",
+  "description": "Companion browser extension for AI Trading Copilot: regime detection, 3:1 net R:R ticket execution, and risk control alongside charting tools.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "http://localhost:8765/*",
+    "*://*.tradingview.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AI Trading Copilot"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.tradingview.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
