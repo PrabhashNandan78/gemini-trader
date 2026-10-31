@@ -19,10 +19,14 @@
     interval: '15m',
     market: 'NSE',
     feedLabel: 'Delayed (15m NSE Feed - Nifty 50 Index Proxy)',
+    isProxy: true,
+    proxyNotice: null,
     regime: null,
     analysis: null,
     ticket: null,
     lastUpdate: null,
+    unverified: false,
+    unverifiedReason: null,
     autoRefresh: true,
     autoTimer: null,
     isDragging: false,
@@ -32,7 +36,6 @@
   // ---------------------------------------------------------------- Initialization
   function init() {
     if (!isTradingViewChartPage()) {
-      // Content script loaded on tradingview domain, but check if it is a chart
       console.log('[Copilot] Waiting for TradingView chart container...');
     }
     
@@ -63,57 +66,159 @@
 
   // ---------------------------------------------------------------- Context Detection
   function detectTradingViewContext() {
+    const title = (document.title || '').trim();
     const urlParams = new URLSearchParams(window.location.search);
     const paramSymbol = urlParams.get('symbol');
     const paramInterval = urlParams.get('interval');
 
-    let rawSymbol = 'NSE:NIFTY1!';
-    let rawInterval = '15m';
+    // 0. Check for 404 / Page Not Found / Unverified state
+    const titleLower = title.toLowerCase();
+    if (titleLower.includes('page not found') || titleLower.includes('404')) {
+      return {
+        symbol: 'UNVERIFIED',
+        interval: '15m',
+        isTradingView: true,
+        unverified: true,
+        reason: 'CHART CONTEXT UNVERIFIED - TradingView page not found or layout expired.'
+      };
+    }
 
-    // 1. Symbol from URL query param
-    if (paramSymbol) {
+    let rawSymbol = null;
+    let rawInterval = null;
+
+    // 1. Primary: Visible Chart DOM Elements (Highest Priority)
+    rawSymbol = getSymbolFromDom();
+
+    // 2. Secondary: Document Title (e.g. "BTCUSD 77,560 ▲ +0.48%" or "NIFTY1! 23,098.9 ▲ +0.22%")
+    if (!rawSymbol && title) {
+      rawSymbol = parseSymbolFromTitle(title);
+    }
+
+    // Reconcile with URL query parameter for exchange qualification if consistent
+    if (rawSymbol && paramSymbol) {
+      const cleanParam = decodeURIComponent(paramSymbol).trim();
+      const paramTicker = cleanParam.includes(':') ? cleanParam.split(':')[1].trim() : cleanParam;
+      if (paramTicker.toUpperCase() === rawSymbol.toUpperCase()) {
+        rawSymbol = cleanParam; // Use the verified exchange-qualified ticker
+      }
+    } else if (!rawSymbol && paramSymbol) {
+      // 3. Fallback: URL Query parameter (only if title / DOM didn't contradict)
       rawSymbol = decodeURIComponent(paramSymbol).trim();
-    } else {
-      // 2. Symbol from URL pathname (e.g. /symbols/NSE-NIFTY1!/ or /symbols/BTCUSD/)
+    }
+
+    // 4. Fallback: URL Pathname (e.g. /symbols/NSE-NIFTY1!/ or /symbols/BTCUSD/)
+    if (!rawSymbol) {
       const path = window.location.pathname || '';
       if (path.includes('/symbols/')) {
         const parts = path.split('/symbols/')[1].split('/')[0];
         if (parts) {
           rawSymbol = decodeURIComponent(parts).replace('-', ':').trim();
         }
-      } else {
-        // 3. Symbol from Page Title (e.g. "NIFTY 50 Futures / NSE:NIFTY1! 15m - TradingView")
-        const title = document.title || '';
-        const titleParts = title.split(' ');
-        if (titleParts.length > 0) {
-          const candidate = titleParts[0].trim();
-          if (candidate && candidate.length <= 20) {
-            rawSymbol = candidate;
-          }
-        }
       }
     }
 
     // Interval detection
-    if (paramInterval) {
-      rawInterval = normalizeInterval(paramInterval);
-    } else {
-      // Look for interval token in document title (e.g., "15", "15m", "1D", "5m")
-      const title = document.title || '';
-      const match = title.match(/\b(1m|2m|5m|15m|30m|60m|1h|1d|1|2|5|15|30|60|D)\b/i);
-      if (match) {
-        rawInterval = normalizeInterval(match[1]);
-      } else if (rawSymbol.includes('NIFTY1!')) {
-        rawInterval = '15m'; // Default timeframe for Nifty futures
+    rawInterval = getIntervalFromDom();
+    if (!rawInterval) {
+      if (paramInterval) {
+        rawInterval = normalizeInterval(paramInterval);
+      } else {
+        const match = title.match(/\b(1m|2m|5m|15m|30m|60m|1h|1d|1|2|5|15|30|60|D)\b/i);
+        if (match) {
+          rawInterval = normalizeInterval(match[1]);
+        } else if (rawSymbol && rawSymbol.includes('NIFTY1!')) {
+          rawInterval = '15m';
+        } else {
+          rawInterval = '15m';
+        }
       }
     }
 
+    if (!rawSymbol || rawSymbol.toUpperCase() === 'UNVERIFIED') {
+      return {
+        symbol: 'UNVERIFIED',
+        interval: rawInterval || '15m',
+        isTradingView: true,
+        unverified: true,
+        reason: 'CHART CONTEXT UNVERIFIED - NO TRADE'
+      };
+    }
+
     return {
-      symbol: rawSymbol,
-      interval: rawInterval,
+      symbol: cleanRawSymbol(rawSymbol),
+      interval: rawInterval || '15m',
       isTradingView: true,
+      unverified: false,
       dataNotice: 'Active ticker detected. Candle data evaluated via authorized Copilot backend feed.'
     };
+  }
+
+  const NON_SYMBOL_WORDS = new Set(['NSE', 'BSE', 'VOL', 'VOLUME', 'SEARCH', 'COMPARE', 'INDICATORS', 'ALERT', 'REPLAY', 'BARS']);
+
+  function getSymbolFromDom() {
+    // 1. Check header symbol search toolbar button (most authoritative)
+    const searchBtn = document.querySelector('#header-toolbar-symbol-search');
+    if (searchBtn) {
+      const text = (searchBtn.innerText || searchBtn.textContent || '').trim();
+      const firstLine = text.split('\n')[0].trim();
+      if (firstLine && firstLine.length >= 2 && firstLine.length <= 25 && !NON_SYMBOL_WORDS.has(firstLine.toUpperCase())) {
+        return cleanRawSymbol(firstLine);
+      }
+    }
+
+    // 2. Check legend series item
+    const legendItem = document.querySelector('[data-name="legend-series-item"]');
+    if (legendItem) {
+      const titleEl = legendItem.querySelector('[class*="title-"]');
+      if (titleEl) {
+        const text = (titleEl.innerText || titleEl.textContent || '').trim();
+        const cand = text.split('\n')[0].split(' ')[0].trim();
+        if (cand && cand.length >= 2 && cand.length <= 25 && !NON_SYMBOL_WORDS.has(cand.toUpperCase())) {
+          return cleanRawSymbol(cand);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function parseSymbolFromTitle(title) {
+    if (!title) return null;
+    const t = title.trim();
+    if (t.toLowerCase().includes('page not found') || t.toLowerCase().includes('404')) {
+      return null;
+    }
+    // Clean unicode arrows, dashes, commas
+    const cleaned = t.replace(/[\u25b2\u25bc\u2014\u2013-]/g, ' ').trim();
+    const parts = cleaned.split(/[\s,]+/);
+    if (parts.length > 0) {
+      const cand = parts[0].trim();
+      if (cand.toLowerCase() === 'bitcoin') return 'BTCUSD';
+      if (cand.toLowerCase() === 'ethereum') return 'ETHUSD';
+      if (cand.toLowerCase() === 'solana') return 'SOLUSD';
+      if (cand.length >= 2 && cand.length <= 20 && !cand.toLowerCase().includes('tradingview')) {
+        return cleanRawSymbol(cand);
+      }
+    }
+    return null;
+  }
+
+  function getIntervalFromDom() {
+    const intBtn = document.querySelector('#header-toolbar-intervals') ||
+                   document.querySelector('[data-name="time-interval"]') ||
+                   document.querySelector('[data-name="intervals-menu-button"]');
+    if (intBtn) {
+      const text = (intBtn.innerText || intBtn.textContent || '').trim();
+      if (text) {
+        return normalizeInterval(text);
+      }
+    }
+    return null;
+  }
+
+  function cleanRawSymbol(sym) {
+    if (!sym) return '';
+    return sym.replace(/[,;'"\r\n]/g, '').trim();
   }
 
   function normalizeInterval(raw) {
@@ -182,6 +287,9 @@
           <div class="tv-copilot-row">
             <span class="tv-copilot-label">Data Freshness:</span>
             <span class="tv-copilot-val" id="tvFreshnessVal" style="font-size: 10px; color: #94a3b8;">Pending initial scan</span>
+          </div>
+          <div class="tv-copilot-row" id="tvProxyNoticeRow" style="display: none;">
+            <div id="tvProxyNoticeText" style="font-size: 10px; color: #f59e0b; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 4px; padding: 4px; line-height: 1.3; width: 100%;"></div>
           </div>
         </div>
 
@@ -369,7 +477,10 @@
               // Fallback to direct fetch
               directFetch(endpoint, method, body).then(resolve).catch(reject);
             } else if (!response.success) {
-              reject(new Error(response.error || 'API Request failed'));
+              const err = new Error(response.error || 'API Request failed');
+              err.status = response.status || null;
+              err.data = response.data || null;
+              reject(err);
             } else {
               resolve(response.data);
             }
@@ -393,7 +504,11 @@
     const res = await fetch(url, opts);
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(json.error || `HTTP ${res.status}`);
+      const msg = json.error || (json.analysis && json.analysis.reasons && json.analysis.reasons[0]) || `HTTP ${res.status}`;
+      const err = new Error(msg);
+      err.status = res.status;
+      err.data = json;
+      throw err;
     }
     return json;
   }
@@ -403,6 +518,8 @@
     const ctx = detectTradingViewContext();
     STATE.symbol = ctx.symbol;
     STATE.interval = ctx.interval;
+    STATE.unverified = !!ctx.unverified;
+    STATE.unverifiedReason = ctx.reason || null;
 
     const symEl = document.getElementById('tvSymbolVal');
     const intervalSelect = document.getElementById('tvIntervalSelect');
@@ -423,6 +540,19 @@
       btnRefresh.textContent = 'Analyzing...';
     }
 
+    // If context is unverified (e.g. 404 / Page Not Found), report directly without invalid fetch
+    if (STATE.unverified || STATE.symbol === 'UNVERIFIED') {
+      STATE.connected = true;
+      if (dot) dot.className = 'tv-copilot-status-dot online';
+      if (alertBox) alertBox.classList.remove('visible');
+      renderUnverifiedState(STATE.unverifiedReason || 'CHART CONTEXT UNVERIFIED - NO TRADE');
+      if (!isBackground && btnRefresh) {
+        btnRefresh.disabled = false;
+        btnRefresh.textContent = '⚡ Refresh Analysis';
+      }
+      return;
+    }
+
     try {
       if (dot) dot.className = 'tv-copilot-status-dot connecting';
 
@@ -435,6 +565,8 @@
       STATE.analysis = data.analysis;
       STATE.mappedSymbol = data.mapped_symbol || STATE.symbol;
       STATE.feedLabel = data.feed_label || 'Active Data Feed';
+      STATE.isProxy = !!data.is_proxy;
+      STATE.proxyNotice = data.proxy_notice || null;
       STATE.lastUpdate = new Date().toLocaleTimeString();
 
       if (dot) dot.className = 'tv-copilot-status-dot online';
@@ -442,13 +574,28 @@
 
       renderAnalysisResult(data);
     } catch (err) {
-      STATE.connected = false;
-      if (dot) dot.className = 'tv-copilot-status-dot offline';
-      if (alertBox) {
-        alertBox.classList.add('visible');
-        alertText.textContent = err.message || 'Cannot connect to 127.0.0.1:8765';
+      const hasHttpStatus = err && (typeof err.status === 'number' || (err.data && err.data.status));
+      if (hasHttpStatus) {
+        // Backend is online and answered with structured response (e.g. 400 for unsupported ticker)
+        STATE.connected = true;
+        if (dot) dot.className = 'tv-copilot-status-dot online';
+        if (alertBox) alertBox.classList.remove('visible');
+
+        const rejectionReason = (err.data && err.data.analysis && err.data.analysis.reasons && err.data.analysis.reasons[0]) ||
+                                (err.data && err.data.error) ||
+                                err.message ||
+                                'Unsupported market instrument';
+        renderNoTradeState(rejectionReason);
+      } else {
+        // Actual network/fetch failure to local backend
+        STATE.connected = false;
+        if (dot) dot.className = 'tv-copilot-status-dot offline';
+        if (alertBox) {
+          alertBox.classList.add('visible');
+          alertText.textContent = err.message || 'Cannot connect to 127.0.0.1:8765';
+        }
+        renderErrorState(err.message);
       }
-      renderErrorState(err.message);
     } finally {
       if (!isBackground && btnRefresh) {
         btnRefresh.disabled = false;
@@ -467,9 +614,20 @@
     const rationaleText = document.getElementById('tvRationaleText');
     const ticketGrid = document.getElementById('tvTicketGrid');
     const btnExecute = document.getElementById('tvBtnExecute');
+    const proxyRow = document.getElementById('tvProxyNoticeRow');
+    const proxyText = document.getElementById('tvProxyNoticeText');
 
     if (feedLabelEl) feedLabelEl.textContent = data.feed_label || 'Delayed Feed';
     if (freshnessEl) freshnessEl.textContent = `Updated ${STATE.lastUpdate}`;
+
+    if (proxyRow && proxyText) {
+      if (data.is_proxy && data.proxy_notice) {
+        proxyRow.style.display = 'block';
+        proxyText.textContent = data.proxy_notice;
+      } else {
+        proxyRow.style.display = 'none';
+      }
+    }
 
     const analysis = data.analysis || {};
     const regime = analysis.regime || {};
@@ -525,6 +683,47 @@
     }
   }
 
+  function renderNoTradeState(reason) {
+    const feedLabelEl = document.getElementById('tvFeedLabel');
+    const freshnessEl = document.getElementById('tvFreshnessVal');
+    const regimeBadge = document.getElementById('tvRegimeBadge');
+    const strategyVal = document.getElementById('tvStrategyVal');
+    const decisionBox = document.getElementById('tvDecisionBox');
+    const decisionBadge = document.getElementById('tvDecisionBadge');
+    const rationaleText = document.getElementById('tvRationaleText');
+    const ticketGrid = document.getElementById('tvTicketGrid');
+    const btnExecute = document.getElementById('tvBtnExecute');
+    const proxyRow = document.getElementById('tvProxyNoticeRow');
+
+    if (feedLabelEl) feedLabelEl.textContent = 'Unsupported / No Feed';
+    if (freshnessEl) freshnessEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    if (proxyRow) proxyRow.style.display = 'none';
+
+    if (regimeBadge) {
+      regimeBadge.textContent = 'UNKNOWN';
+      regimeBadge.style.color = '#8b9bb4';
+    }
+    if (strategyVal) strategyVal.textContent = 'None';
+
+    if (decisionBox) decisionBox.className = 'tv-copilot-decision-box notrade';
+    if (decisionBadge) {
+      decisionBadge.className = 'tv-copilot-badge tv-copilot-badge-notrade';
+      decisionBadge.textContent = 'NO TRADE';
+    }
+    if (rationaleText) {
+      rationaleText.textContent = reason;
+    }
+    if (ticketGrid) ticketGrid.style.display = 'none';
+    if (btnExecute) btnExecute.disabled = true;
+    STATE.ticket = null;
+  }
+
+  function renderUnverifiedState(msg) {
+    renderNoTradeState(msg);
+    const feedLabelEl = document.getElementById('tvFeedLabel');
+    if (feedLabelEl) feedLabelEl.textContent = 'Context Unverified';
+  }
+
   function renderErrorState(errMsg) {
     const decisionBadge = document.getElementById('tvDecisionBadge');
     const rationaleText = document.getElementById('tvRationaleText');
@@ -533,13 +732,14 @@
 
     if (decisionBadge) {
       decisionBadge.className = 'tv-copilot-badge tv-copilot-badge-notrade';
-      decisionBadge.textContent = 'ERROR';
+      decisionBadge.textContent = 'OFFLINE';
     }
     if (rationaleText) {
       rationaleText.textContent = errMsg || 'Backend error occurred during market data retrieval.';
     }
     if (ticketGrid) ticketGrid.style.display = 'none';
     if (btnExecute) btnExecute.disabled = true;
+    STATE.ticket = null;
   }
 
   function formatPrice(val) {

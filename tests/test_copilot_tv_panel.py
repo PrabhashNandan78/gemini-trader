@@ -43,6 +43,9 @@ class TestSymbolNormalization(unittest.TestCase):
             self.assertEqual(info["market"], "NSE")
             self.assertIn("NIFTY 50", info["display_name"].upper())
             self.assertIn("Index Proxy", info["source_label"])
+            self.assertTrue(info.get("is_proxy"))
+            self.assertEqual(info.get("proxy_target"), "^NSEI")
+            self.assertIn("tracks underlying cash index", info.get("proxy_notice", ""))
 
     def test_banknifty_futures_mapping(self):
         tickers = ["NSE:BANKNIFTY1!", "BANKNIFTY1!", "BANKNIFTY", "^NSEBANK"]
@@ -51,12 +54,14 @@ class TestSymbolNormalization(unittest.TestCase):
             self.assertTrue(info["supported"], f"Expected {t} to be supported")
             self.assertEqual(info["mapped_symbol"], "^NSEBANK")
             self.assertEqual(info["market"], "NSE")
+            self.assertTrue(info.get("is_proxy"))
 
     def test_nse_equities_mapping(self):
         info1 = normalize_market_symbol("NSE:RELIANCE")
         self.assertTrue(info1["supported"])
         self.assertEqual(info1["mapped_symbol"], "RELIANCE.NS")
         self.assertEqual(info1["market"], "NSE")
+        self.assertFalse(info1.get("is_proxy"))
 
         info2 = normalize_market_symbol("TCS.NS")
         self.assertTrue(info2["supported"])
@@ -67,18 +72,36 @@ class TestSymbolNormalization(unittest.TestCase):
         self.assertEqual(info3["mapped_symbol"], "INFY.NS")
 
     def test_crypto_mapping(self):
-        info1 = normalize_market_symbol("BINANCE:BTCUSDT")
-        self.assertTrue(info1["supported"])
-        self.assertEqual(info1["mapped_symbol"], "BTC-USD")
-        self.assertEqual(info1["market"], "CRYPTO")
+        crypto_variants = [
+            ("BINANCE:BTCUSDT", "BTC-USD"),
+            ("COINBASE:BTCUSD", "BTC-USD"),
+            ("BITSTAMP:BTCUSD", "BTC-USD"),
+            ("INDEX:BTCUSD", "BTC-USD"),
+            ("CRYPTO:BTCUSD", "BTC-USD"),
+            ("OKX:BTCUSDT", "BTC-USD"),
+            ("BTC / USD", "BTC-USD"),
+            ("BTC-USD", "BTC-USD"),
+            ("Bitcoin", "BTC-USD"),
+            ("BTCUSD,", "BTC-USD"),
+            ("Ethereum", "ETH-USD"),
+            ("ETH-USD", "ETH-USD"),
+            ("BINANCE:ETHUSDT", "ETH-USD"),
+            ("Solana", "SOL-USD"),
+            ("SOL-USD", "SOL-USD"),
+        ]
+        for raw, expected in crypto_variants:
+            info = normalize_market_symbol(raw)
+            self.assertTrue(info["supported"], f"Expected {raw} to map to {expected}")
+            self.assertEqual(info["mapped_symbol"], expected)
+            self.assertEqual(info["market"], "CRYPTO")
+            self.assertEqual(info["source_label"], "Live 24/7 Spot")
 
-        info2 = normalize_market_symbol("COINBASE:BTCUSD")
-        self.assertTrue(info2["supported"])
-        self.assertEqual(info2["mapped_symbol"], "BTC-USD")
-
-        info3 = normalize_market_symbol("ETH-USD")
-        self.assertTrue(info3["supported"])
-        self.assertEqual(info3["mapped_symbol"], "ETH-USD")
+    def test_unverified_context_rejection(self):
+        unverified_inputs = ["UNVERIFIED", "Page not found", "404", "NONE", ""]
+        for item in unverified_inputs:
+            info = normalize_market_symbol(item)
+            self.assertFalse(info["supported"], f"Expected {item} to be unverified/unsupported")
+            self.assertIn("CHART CONTEXT UNVERIFIED", info["reason"])
 
     def test_us_equity_mapping(self):
         info1 = normalize_market_symbol("NASDAQ:AAPL")
@@ -176,6 +199,23 @@ class TestTradingViewServerEndpoints(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 400)
         body = json.loads(ctx.exception.read().decode("utf-8"))
         self.assertEqual(body.get("status"), "UNSUPPORTED_SYMBOL")
+        self.assertIn("error", body)
+        self.assertIn("UNSUPPORTED SYMBOL", body["error"])
+        self.assertEqual(body["analysis"]["decision"], "NO_TRADE")
+        self.assertIn("UNSUPPORTED SYMBOL", body["analysis"]["reasons"][0])
+
+    def test_unverified_context_analyze_returns_400(self):
+        url = f"http://127.0.0.1:{self.port}/api/analyze"
+        payload = json.dumps({"symbol": "UNVERIFIED", "interval": "15m"}).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(ctx.exception.code, 400)
+        body = json.loads(ctx.exception.read().decode("utf-8"))
+        self.assertEqual(body.get("status"), "UNSUPPORTED_SYMBOL")
+        self.assertIn("error", body)
+        self.assertIn("CHART CONTEXT UNVERIFIED", body["error"])
         self.assertEqual(body["analysis"]["decision"], "NO_TRADE")
 
 

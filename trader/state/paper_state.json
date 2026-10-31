@@ -1,17 +1,17 @@
 {
   "version": "1.0",
   "mode": "paper",
-  "last_updated": "2026-10-31T17:35:17.688727+00:00",
+  "last_updated": "2026-10-31T18:11:11.276331+00:00",
   "currency": "INR",
   "initial_balance": 100000.0,
   "balance": 87988.755,
   "equity": 99993.555,
-  "peak_equity": 100430.955,
-  "max_drawdown_pct": 0.4355,
+  "peak_equity": 100460.555,
+  "max_drawdown_pct": 0.4649,
   "positions": {
     "RELIANCE.NS": {
-      "position_id": "pos_ae34220e",
-      "order_id": "paper_ord_ed2c452059",
+      "position_id": "pos_a0aba174",
+      "order_id": "paper_ord_a71584dcee",
       "symbol": "RELIANCE.NS",
       "market": "NSE",
       "side": "BUY",
@@ -22,7 +22,7 @@
       "take_profit": 2565.0,
       "planned_rr": 3.2,
       "strategy": "TrendFollowing",
-      "entry_time": "2026-10-31T17:35:17.688501+00:00",
+      "entry_time": "2026-10-31T18:11:11.275760+00:00",
       "entry_friction": 6.445,
       "unrealized_pnl": 0.0,
       "unrealized_pnl_pct": 0.0
@@ -133,6 +133,51 @@
       "filled_at": "2026-10-31T17:35:17.688501+00:00",
       "strategy": "TrendFollowing",
       "friction_paid": 6.445
+    },
+    "paper_ord_8a9a132351": {
+      "order_id": "paper_ord_8a9a132351",
+      "symbol": "RELIANCE.NS",
+      "market": "NSE",
+      "side": "BUY",
+      "quantity": 5.0,
+      "requested_price": 2400.0,
+      "fill_price": 2400.96,
+      "slippage": 0.96,
+      "status": "FILLED",
+      "created_at": "2026-10-31T17:48:00.768467+00:00",
+      "filled_at": "2026-10-31T17:48:00.768467+00:00",
+      "strategy": "TrendFollowing",
+      "friction_paid": 6.445
+    },
+    "paper_ord_03e53493ca": {
+      "order_id": "paper_ord_03e53493ca",
+      "symbol": "RELIANCE.NS",
+      "market": "NSE",
+      "side": "BUY",
+      "quantity": 5.0,
+      "requested_price": 2400.0,
+      "fill_price": 2400.96,
+      "slippage": 0.96,
+      "status": "FILLED",
+      "created_at": "2026-10-31T17:51:09.588926+00:00",
+      "filled_at": "2026-10-31T17:51:09.588926+00:00",
+      "strategy": "TrendFollowing",
+      "friction_paid": 6.445
+    },
+    "paper_ord_a71584dcee": {
+      "order_id": "paper_ord_a71584dcee",
+      "symbol": "RELIANCE.NS",
+      "market": "NSE",
+      "side": "BUY",
+      "quantity": 5.0,
+      "requested_price": 2400.0,
+      "fill_price": 2400.96,
+      "slippage": 0.96,
+      "status": "FILLED",
+      "created_at": "2026-10-31T18:11:11.275760+00:00",
+      "filled_at": "2026-10-31T18:11:11.275760+00:00",
+      "strategy": "TrendFollowing",
+      "friction_paid": 6.445
     }
   },
   "trade_history": [
@@ -171,6 +216,6 @@
     "average_r": -0.09,
     "average_win": 0.0,
     "average_loss": 23.34,
-    "max_drawdown_pct": 0.44
+    "max_drawdown_pct": 0.46
   }
 }

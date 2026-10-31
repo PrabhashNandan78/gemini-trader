@@ -153,156 +153,241 @@ def sanitize_for_json(obj: Any) -> Any:
 
 def normalize_market_symbol(raw_symbol: str, market: Optional[str] = None) -> Dict[str, Any]:
     """Normalizes raw ticker symbols from TradingView or user inputs to verified provider symbols."""
-    raw = raw_symbol.strip()
+    raw = (raw_symbol or "").strip().strip(",;'\"")
+    if not raw or raw.upper() in ("UNVERIFIED", "PAGE NOT FOUND", "404", "NONE"):
+        return {
+            "supported": False,
+            "original_symbol": raw_symbol,
+            "mapped_symbol": None,
+            "market": "UNKNOWN",
+            "asset_class": "unknown",
+            "display_name": raw_symbol or "UNVERIFIED",
+            "source_label": "Unverified Context",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
+            "reason": "CHART CONTEXT UNVERIFIED - TradingView chart page not found or layout expired.",
+        }
+
     clean = raw.upper().replace("NSE-", "NSE:").replace("BSE-", "BSE:")
 
     # 1. TradingView Index Futures & Spot Proxies
     # NIFTY 50 Futures / Continuous
-    if clean in ("NSE:NIFTY1!", "NIFTY1!", "NIFTY", "NSE:NIFTY", "^NSEI", "NIFTY50", "NSE:NIFTY50"):
+    nifty_cand = clean[4:].strip() if clean.startswith("NSE:") else clean
+    if nifty_cand in ("NIFTY1!", "NIFTY", "^NSEI", "NIFTY50", "NIFTY 50", "NIFTY_50", "NIFTY 50 INDEX", "NIFTY 50 FUTURES", "NIFTY50 INDEX", "NIFTY50 FUTURES"):
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": "^NSEI",
             "market": "NSE",
             "asset_class": "index_futures",
             "display_name": "NIFTY 50 (Continuous Futures Proxy)",
             "source_label": "Delayed (15m NSE Feed - Nifty 50 Index Proxy)",
             "exchange": "NSE",
+            "is_proxy": True,
+            "proxy_target": "^NSEI",
+            "proxy_notice": "Proxy: ^NSEI (NIFTY 50 Spot Index Proxy) - Public feed tracks underlying cash index, not live futures basis/expiry.",
         }
 
     # BANKNIFTY Futures / Continuous
-    if clean in ("NSE:BANKNIFTY1!", "BANKNIFTY1!", "BANKNIFTY", "NSE:BANKNIFTY", "^NSEBANK", "NSE:BANKNIFTY50"):
+    if nifty_cand in ("BANKNIFTY1!", "BANKNIFTY", "^NSEBANK", "BANKNIFTY50", "BANK NIFTY", "BANK_NIFTY", "BANK NIFTY INDEX", "BANK NIFTY FUTURES"):
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": "^NSEBANK",
             "market": "NSE",
             "asset_class": "index_futures",
             "display_name": "BANK NIFTY (Continuous Futures Proxy)",
             "source_label": "Delayed (15m NSE Feed - Bank Nifty Index Proxy)",
             "exchange": "NSE",
+            "is_proxy": True,
+            "proxy_target": "^NSEBANK",
+            "proxy_notice": "Proxy: ^NSEBANK (BANK NIFTY Spot Index Proxy) - Public feed tracks underlying cash index, not live futures basis/expiry.",
         }
 
     # 2. Indian Equities (NSE / BSE)
     if clean.startswith("NSE:"):
-        ticker = clean[4:]
+        ticker = clean[4:].strip()
         mapped = f"{ticker}.NS"
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": mapped,
             "market": "NSE",
             "asset_class": "equity_in",
             "display_name": ticker,
             "source_label": "Delayed (15m NSE Feed)",
             "exchange": "NSE",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
     if clean.startswith("BSE:"):
-        ticker = clean[4:]
+        ticker = clean[4:].strip()
         mapped = f"{ticker}.BO"
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": mapped,
             "market": "BSE",
             "asset_class": "equity_in",
             "display_name": ticker,
             "source_label": "Delayed (15m BSE Feed)",
             "exchange": "BSE",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
     if clean.endswith(".NS") or clean.endswith(".BO"):
         exch = "NSE" if clean.endswith(".NS") else "BSE"
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": clean,
             "market": exch,
             "asset_class": "equity_in",
             "display_name": clean.split(".")[0],
             "source_label": f"Delayed (15m {exch} Feed)",
             "exchange": exch,
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
 
-    # 3. Cryptocurrencies (Binance, Coinbase, Spot Pairs)
+    # 3. Cryptocurrencies (Binance, Coinbase, Kraken, Bitstamp, Spot Pairs, Natural names)
+    KNOWN_CRYPTO_PREFIXES = (
+        "BINANCE:", "COINBASE:", "BYBIT:", "KRAKEN:", "BITSTAMP:", "OKX:", "KUCOIN:",
+        "GATEIO:", "MEXC:", "BITGET:", "INDEX:", "CRYPTO:", "GEMINI:", "BITFINEX:",
+        "HUOBI:", "HTX:", "DERIBIT:"
+    )
     crypto_clean = clean
-    for prefix in ("BINANCE:", "COINBASE:", "BYBIT:", "KRAKEN:"):
+    for prefix in KNOWN_CRYPTO_PREFIXES:
         if crypto_clean.startswith(prefix):
-            crypto_clean = crypto_clean[len(prefix):]
+            crypto_clean = crypto_clean[len(prefix):].strip()
             break
 
-    if crypto_clean.endswith("USDT"):
-        crypto_mapped = crypto_clean[:-4] + "-USD"
+    # Handle natural crypto names
+    if crypto_clean in ("BITCOIN", "BITCOIN / DOLLAR", "BITCOIN/DOLLAR", "BTC"):
+        crypto_clean = "BTCUSD"
+    elif crypto_clean in ("ETHEREUM", "ETHEREUM / DOLLAR", "ETHEREUM/DOLLAR", "ETH"):
+        crypto_clean = "ETHUSD"
+    elif crypto_clean in ("SOLANA", "SOLANA / DOLLAR", "SOLANA/DOLLAR", "SOL"):
+        crypto_clean = "SOLUSD"
+
+    # Normalize slashes and spaces (e.g. BTC/USD -> BTCUSD, BTC / USD -> BTCUSD)
+    crypto_normalized = crypto_clean.replace("/", "").replace(" ", "").replace("_", "")
+
+    if crypto_normalized in ("BTCUSD", "BTC-USD", "XBTUSD") or crypto_normalized.startswith("BTCUSDT"):
         return {
             "supported": True,
-            "original_symbol": raw,
-            "mapped_symbol": crypto_mapped,
-            "market": "CRYPTO",
-            "asset_class": "crypto",
-            "display_name": crypto_clean,
-            "source_label": "Live 24/7 Spot",
-            "exchange": "CRYPTO",
-        }
-    if crypto_clean in ("BTCUSD", "BTC-USD", "BTC/USD"):
-        return {
-            "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": "BTC-USD",
             "market": "CRYPTO",
             "asset_class": "crypto",
             "display_name": "BTC-USD",
             "source_label": "Live 24/7 Spot",
             "exchange": "CRYPTO",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
-    if crypto_clean in ("ETHUSD", "ETH-USD", "ETH/USD"):
+
+    if crypto_normalized in ("ETHUSD", "ETH-USD") or crypto_normalized.startswith("ETHUSDT"):
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": "ETH-USD",
             "market": "CRYPTO",
             "asset_class": "crypto",
             "display_name": "ETH-USD",
             "source_label": "Live 24/7 Spot",
             "exchange": "CRYPTO",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
-    if crypto_clean in ("SOLUSD", "SOL-USD", "SOL/USD"):
+
+    if crypto_normalized in ("SOLUSD", "SOL-USD") or crypto_normalized.startswith("SOLUSDT"):
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": "SOL-USD",
             "market": "CRYPTO",
             "asset_class": "crypto",
             "display_name": "SOL-USD",
             "source_label": "Live 24/7 Spot",
             "exchange": "CRYPTO",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
-    if "-" in crypto_clean and crypto_clean.split("-")[1] in ("USD", "USDT", "INR", "EUR"):
+
+    if crypto_normalized.endswith("USDT") and len(crypto_normalized) > 4:
+        mapped = crypto_normalized[:-4] + "-USD"
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
+            "mapped_symbol": mapped,
+            "market": "CRYPTO",
+            "asset_class": "crypto",
+            "display_name": mapped,
+            "source_label": "Live 24/7 Spot",
+            "exchange": "CRYPTO",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
+        }
+
+    if crypto_normalized.endswith("USD") and len(crypto_normalized) > 3 and not crypto_normalized.startswith("^"):
+        mapped = crypto_normalized[:-3] + "-USD"
+        return {
+            "supported": True,
+            "original_symbol": raw_symbol,
+            "mapped_symbol": mapped,
+            "market": "CRYPTO",
+            "asset_class": "crypto",
+            "display_name": mapped,
+            "source_label": "Live 24/7 Spot",
+            "exchange": "CRYPTO",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
+        }
+
+    if "-" in crypto_clean and crypto_clean.split("-")[1] in ("USD", "USDT", "INR", "EUR", "BUSD"):
+        return {
+            "supported": True,
+            "original_symbol": raw_symbol,
             "mapped_symbol": crypto_clean,
             "market": "CRYPTO",
             "asset_class": "crypto",
             "display_name": crypto_clean,
             "source_label": "Live 24/7 Spot",
             "exchange": "CRYPTO",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
 
     # 4. US Equities
     us_clean = clean
     for prefix in ("NASDAQ:", "NYSE:", "AMEX:"):
         if us_clean.startswith(prefix):
-            us_clean = us_clean[len(prefix):]
+            us_clean = us_clean[len(prefix):].strip()
             break
     if us_clean in ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "SPY", "QQQ"):
         return {
             "supported": True,
-            "original_symbol": raw,
+            "original_symbol": raw_symbol,
             "mapped_symbol": us_clean,
             "market": "US",
             "asset_class": "equity_us",
             "display_name": us_clean,
             "source_label": "Live / Delayed US Feed",
             "exchange": "US",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
 
     # 5. Known Indian Equities without prefix
@@ -314,25 +399,31 @@ def normalize_market_symbol(raw_symbol: str, market: Optional[str] = None) -> Di
     if clean in COMMON_NSE_TICKERS:
         return {
             "supported": True,
-            "original_symbol": raw,
-            "mapped_symbol": f"{clean}.NS",
+            "original_symbol": raw_symbol,
+            "mapped_symbol": f"{clean}.NS" if not clean.endswith(".NS") else clean,
             "market": "NSE",
             "asset_class": "equity_in",
-            "display_name": clean,
+            "display_name": clean.replace(".NS", ""),
             "source_label": "Delayed (15m NSE Feed)",
             "exchange": "NSE",
+            "is_proxy": False,
+            "proxy_target": None,
+            "proxy_notice": None,
         }
 
     # 6. Unsupported / Unmapped Symbol
     return {
         "supported": False,
-        "original_symbol": raw,
+        "original_symbol": raw_symbol,
         "mapped_symbol": None,
         "market": market or "UNKNOWN",
         "asset_class": "unknown",
-        "display_name": raw,
+        "display_name": raw_symbol,
         "source_label": "Unsupported Feed",
-        "reason": f"UNSUPPORTED SYMBOL: '{raw}' has no verified market data feed mapping.",
+        "is_proxy": False,
+        "proxy_target": None,
+        "proxy_notice": None,
+        "reason": f"UNSUPPORTED SYMBOL: '{raw_symbol}' has no verified market data feed mapping.",
     }
 
 
@@ -622,6 +713,9 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             "source": source_label,
             "feed_label": source_label,
             "interval": interval,
+            "is_proxy": sym_info.get("is_proxy", False),
+            "proxy_target": sym_info.get("proxy_target"),
+            "proxy_notice": sym_info.get("proxy_notice"),
             "regime": regime_info,
             "bars_count": len(chart_bars),
             "bars": chart_bars,
@@ -639,7 +733,14 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         sym_info = normalize_market_symbol(raw_symbol, market=market_param)
         if not sym_info["supported"]:
+            reason_msg = sym_info.get("reason", f"Unsupported symbol: {raw_symbol}")
             self._send_json_response({
+                "error": reason_msg,
+                "symbol": raw_symbol,
+                "status": "UNSUPPORTED_SYMBOL",
+                "is_proxy": False,
+                "proxy_target": None,
+                "proxy_notice": None,
                 "analysis": {
                     "decision": "NO_TRADE",
                     "selected_strategy": None,
@@ -651,10 +752,8 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
                         "confidence": 0.0,
                     },
                     "ticket": None,
-                    "reasons": [sym_info.get("reason", f"Unsupported symbol: {raw_symbol}")],
+                    "reasons": [reason_msg],
                 },
-                "symbol": raw_symbol,
-                "status": "UNSUPPORTED_SYMBOL",
                 "market_tick_events": [],
             }, status=400)
             return
@@ -740,6 +839,9 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             "display_name": sym_info.get("display_name", raw_symbol),
             "feed_label": source_label,
             "interval": interval,
+            "is_proxy": sym_info.get("is_proxy", False),
+            "proxy_target": sym_info.get("proxy_target"),
+            "proxy_notice": sym_info.get("proxy_notice"),
             "analysis": analysis,
             "market_tick_events": events,
         })

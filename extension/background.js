@@ -15,7 +15,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'COPILOT_API_REQUEST') {
     handleApiRequest(request)
       .then((data) => sendResponse({ success: true, data: data }))
-      .catch((err) => sendResponse({ success: false, error: err.message || String(err) }));
+      .catch((err) => sendResponse({
+        success: false,
+        error: err.message || String(err),
+        status: err.status || null,
+        data: err.data || null
+      }));
     return true; // Keep message channel open for async response
   }
 
@@ -23,7 +28,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     fetch(`${SERVER_BASE}/health`, { method: 'GET' })
       .then((res) => res.json())
       .then((data) => sendResponse({ success: true, data: data }))
-      .catch((err) => sendResponse({ success: false, error: err.message || String(err) }));
+      .catch((err) => sendResponse({
+        success: false,
+        error: err.message || String(err),
+        status: null,
+        data: null
+      }));
     return true;
   }
 });
@@ -49,7 +59,7 @@ async function handleApiRequest(req) {
   const json = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const errorMsg = json.error || `HTTP ${response.status} from backend`;
+    const errorMsg = json.error || (json.analysis && json.analysis.reasons && json.analysis.reasons[0]) || `HTTP ${response.status} from backend`;
     const err = new Error(errorMsg);
     err.status = response.status;
     err.data = json;
