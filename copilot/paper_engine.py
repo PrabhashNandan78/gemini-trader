@@ -532,3 +532,4 @@ class PaperTradingEngine:
             "average_loss": round(avg_loss, 2),
             "max_drawdown_pct": round(self.max_drawdown_pct, 2),
         })
+

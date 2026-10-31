@@ -124,6 +124,32 @@ def generate_synthetic_bars(symbol: str, count: int = 80, interval_sec: int = 30
     return bars
 
 
+def clean_float(val: Optional[float], decimals: int = 2) -> Optional[float]:
+    """Return rounded float or None if None, NaN, or Inf."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return round(f, decimals)
+    except (ValueError, TypeError):
+        return None
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """Recursively convert float('nan') and float('inf') to None for RFC-compliant JSON."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [sanitize_for_json(v) for v in obj]
+    return obj
+
+
 class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
     """Custom HTTP Request Handler serving REST API endpoints and web UI."""
 
@@ -138,13 +164,33 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 
     def _send_json_response(self, data: Any, status: int = 200) -> None:
-        payload = json.dumps(data, indent=2).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self._send_cors_headers()
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            sanitized = sanitize_for_json(data)
+            payload = json.dumps(sanitized, indent=2).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.write(payload)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # Client closed connection early
+            return
+        except Exception as e:
+            try:
+                err_body = json.dumps({
+                    "error": "Internal JSON serialization error",
+                    "details": str(e),
+                    "status": "ERROR"
+                }).encode("utf-8")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err_body)))
+                self._send_cors_headers()
+                self.end_headers()
+                self.wfile.write(err_body)
+            except Exception:
+                pass
 
     def do_OPTIONS(self) -> None:
         """Handle CORS preflight requests."""
@@ -163,6 +209,8 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/status":
             self.handle_get_status()
+        elif path == "/api/health":
+            self.handle_get_health()
         elif path == "/api/config":
             self.handle_get_config()
         elif path == "/api/chart":
@@ -174,7 +222,7 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         elif path == "/api/trades":
             self.handle_get_trades()
         elif path.startswith("/api/"):
-            self._send_json_response({"error": f"API endpoint not found: {path}"}, status=404)
+            self._send_json_response({"error": f"API endpoint not found: {path}", "status": "NOT_FOUND"}, status=404)
         else:
             # Fallback to static web dashboard
             super().do_GET()
@@ -236,6 +284,13 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             "stats": state_snapshot.get("stats", {}),
         })
 
+    def handle_get_health(self) -> None:
+        self._send_json_response({
+            "status": "OK",
+            "version": "2.0.0",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
     def handle_get_config(self) -> None:
         global SERVER_STATE
         self._send_json_response(SERVER_STATE.user_config.to_dict())
@@ -251,66 +306,123 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_get_chart(self, query: Dict[str, List[str]]) -> None:
         global SERVER_STATE
-        symbol = query.get("symbol", ["RELIANCE.NS"])[0].upper()
+        symbols = query.get("symbol")
+        if not symbols or not symbols[0].strip():
+            self._send_json_response({"error": "Missing or empty 'symbol' parameter", "status": "ERROR"}, status=400)
+            return
+
+        symbol = symbols[0].strip().upper()
         market = query.get("market", ["NSE"])[0].upper()
-        interval = query.get("interval", ["5m"])[0]
-        count = int(query.get("count", ["80"])[0])
-
-        # Attempt to get real bars from MarketDataProvider, fallback to synthetic
-        bars = []
-        source = "live_provider"
+        interval = query.get("interval", ["5m"])[0].lower()
         try:
-            _, fetched_bars, _ = SERVER_STATE.market_data.get_bars(symbol=symbol, range_str="5d", interval=interval)
-            if fetched_bars and len(fetched_bars) >= 20:
-                bars = fetched_bars[-count:]
-        except Exception:
-            bars = []
+            count = max(10, min(500, int(query.get("count", ["80"])[0])))
+        except ValueError:
+            count = 80
 
-        if not bars:
-            source = "synthetic_simulator"
-            bars = generate_synthetic_bars(symbol, count=count)
+        # Validate interval
+        allowed_intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "1h", "1d"]
+        if interval not in allowed_intervals:
+            self._send_json_response({
+                "error": f"Unsupported interval '{interval}'. Supported intervals: {', '.join(allowed_intervals)}",
+                "symbol": symbol,
+                "status": "ERROR"
+            }, status=400)
+            return
+
+        # Map interval to historical range
+        if interval in ("1m", "2m"):
+            range_str = "1d"
+        elif interval in ("5m", "15m", "30m"):
+            range_str = "5d"
+        elif interval in ("60m", "1h"):
+            range_str = "1mo"
+        else:
+            range_str = "6mo"
+
+        # Fetch real candles from MarketDataProvider
+        bars = []
+        try:
+            _, fetched_bars, meta = SERVER_STATE.market_data.get_bars(symbol=symbol, range_str=range_str, interval=interval)
+            if fetched_bars:
+                bars = fetched_bars[-count:]
+        except MarketDataError as e:
+            self._send_json_response({
+                "error": f"Market data provider error for {symbol}: {str(e)}",
+                "symbol": symbol,
+                "market": market,
+                "status": "ERROR"
+            }, status=502)
+            return
+        except Exception as e:
+            self._send_json_response({
+                "error": f"Failed to retrieve market data for {symbol}: {str(e)}",
+                "symbol": symbol,
+                "market": market,
+                "status": "ERROR"
+            }, status=502)
+            return
+
+        if not bars or len(bars) < 5:
+            self._send_json_response({
+                "error": f"No candles available for {symbol} at interval {interval}",
+                "symbol": symbol,
+                "market": market,
+                "status": "NO_DATA"
+            }, status=404)
+            return
+
+        # Accurate data source labeling
+        if symbol.endswith(".NS") or symbol.endswith(".BO") or market == "NSE":
+            source_label = "Delayed (15m NSE Feed)"
+        elif any(c in symbol for c in ["-USD", "/USD", "USDT"]) or market in ("CRYPTO", "BINANCE"):
+            source_label = "Live 24/7 Spot"
+        else:
+            source_label = "Live / Delayed US Feed"
+
+        # Sort bars chronologically
+        bars.sort(key=lambda b: b["timestamp"])
 
         # Compute quantitative indicators
-        closes = [b["close"] for b in bars]
-        highs = [b["high"] for b in bars]
-        lows = [b["low"] for b in bars]
+        closes = [float(b["close"]) for b in bars]
+        highs = [float(b["high"]) for b in bars]
+        lows = [float(b["low"]) for b in bars]
 
         ema9 = calc_ema(closes, 9)
         ema21 = calc_ema(closes, 21)
         ema50 = calc_ema(closes, 50)
-        bb = calc_bollinger_bands(closes, period=20, std_dev=2.0)
+        bb = calc_bollinger_bands(closes, period=20, mult=2.0)
         atr14 = calc_atr(highs, lows, closes, period=14)
         rsi14 = calc_rsi(closes, period=14)
-        adx14 = calc_adx(highs, lows, closes, period=14)
+        plus_di, minus_di, adx_series = calc_adx(highs, lows, closes, period=14)
 
         # Detect regime
         regime_info = MarketRegimeDetector.detect_regime(bars)
 
-        # Attach computed indicators to bars
+        # Attach clean computed indicators to bars
         chart_bars = []
         for i, b in enumerate(bars):
             chart_bars.append({
                 "time": b["timestamp"],
                 "datetime": b.get("datetime_local", ""),
-                "open": b["open"],
-                "high": b["high"],
-                "low": b["low"],
-                "close": b["close"],
-                "volume": b.get("volume", 0),
-                "ema9": round(ema9[i], 2) if i < len(ema9) and ema9[i] is not None else None,
-                "ema21": round(ema21[i], 2) if i < len(ema21) and ema21[i] is not None else None,
-                "ema50": round(ema50[i], 2) if i < len(ema50) and ema50[i] is not None else None,
-                "bb_upper": round(bb["upper"][i], 2) if i < len(bb["upper"]) and bb["upper"][i] is not None else None,
-                "bb_middle": round(bb["middle"][i], 2) if i < len(bb["middle"]) and bb["middle"][i] is not None else None,
-                "bb_lower": round(bb["lower"][i], 2) if i < len(bb["lower"]) and bb["lower"][i] is not None else None,
-                "rsi": round(rsi14[i], 2) if i < len(rsi14) and rsi14[i] is not None else None,
-                "adx": round(adx14[i], 2) if i < len(adx14) and adx14[i] is not None else None,
+                "open": round(float(b["open"]), 4),
+                "high": round(float(b["high"]), 4),
+                "low": round(float(b["low"]), 4),
+                "close": round(float(b["close"]), 4),
+                "volume": int(b.get("volume", 0)),
+                "ema9": clean_float(ema9[i]),
+                "ema21": clean_float(ema21[i]),
+                "ema50": clean_float(ema50[i]),
+                "bb_upper": clean_float(bb.upper[i]),
+                "bb_middle": clean_float(bb.middle[i]),
+                "bb_lower": clean_float(bb.lower[i]),
+                "rsi": clean_float(rsi14[i]),
+                "adx": clean_float(adx_series[i]),
             })
 
         self._send_json_response({
             "symbol": symbol,
             "market": market,
-            "source": source,
+            "source": source_label,
             "regime": regime_info,
             "bars_count": len(chart_bars),
             "bars": chart_bars,
@@ -318,20 +430,53 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_post_analyze(self, payload: Dict[str, Any]) -> None:
         global SERVER_STATE
-        symbol = payload.get("symbol", "RELIANCE.NS").upper()
-        market = payload.get("market", SERVER_STATE.user_config.market).upper()
+        symbol = str(payload.get("symbol", "RELIANCE.NS")).strip().upper()
+        market = str(payload.get("market", SERVER_STATE.user_config.market)).strip().upper()
 
-        # Get bars
+        # Fetch real bars
         bars = []
         try:
             _, fetched_bars, _ = SERVER_STATE.market_data.get_bars(symbol=symbol, range_str="5d", interval="5m")
             if fetched_bars and len(fetched_bars) >= 20:
                 bars = fetched_bars
-        except Exception:
-            bars = []
+        except Exception as e:
+            self._send_json_response({
+                "analysis": {
+                    "decision": "NO_TRADE",
+                    "selected_strategy": None,
+                    "regime": {
+                        "regime": "UNKNOWN",
+                        "trend_strength": "NONE",
+                        "volatility_state": "UNKNOWN",
+                        "adx": 0.0,
+                        "confidence": 0.0,
+                    },
+                    "ticket": None,
+                    "reasons": [f"Market data provider error for {symbol}: {str(e)}"],
+                },
+                "market_tick_events": [],
+                "error": str(e),
+            }, status=502)
+            return
 
-        if not bars:
-            bars = generate_synthetic_bars(symbol, count=80)
+        if not bars or len(bars) < 20:
+            self._send_json_response({
+                "analysis": {
+                    "decision": "NO_TRADE",
+                    "selected_strategy": None,
+                    "regime": {
+                        "regime": "UNKNOWN",
+                        "trend_strength": "NONE",
+                        "volatility_state": "UNKNOWN",
+                        "adx": 0.0,
+                        "confidence": 0.0,
+                    },
+                    "ticket": None,
+                    "reasons": [f"Insufficient historical bars ({len(bars)}/20) for {symbol} to establish statistical regime."],
+                },
+                "market_tick_events": [],
+            }, status=404)
+            return
 
         # Run adaptive strategy engine
         analysis = SERVER_STATE.strategy_engine.analyze_and_generate_ticket(
@@ -343,6 +488,12 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Feed latest tick into paper engine to trigger pending stops/targets
         latest_bar = bars[-1]
+        events = SERVER_STATE.paper_engine.process_market_tick(symbol, latest_bar)
+
+        self._send_json_response({
+            "analysis": analysis,
+            "market_tick_events": events,
+        })
         events = SERVER_STATE.paper_engine.process_market_tick(symbol, latest_bar)
 
         self._send_json_response({
@@ -449,3 +600,4 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8765, help="Port to listen on")
     args = parser.parse_args()
     run_server(args.host, args.port)
+

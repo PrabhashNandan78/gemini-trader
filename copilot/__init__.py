@@ -5,3 +5,4 @@ multi-strategy adaptation, deterministic position sizing, and first-class paper 
 """
 
 __version__ = "3.0.0"
+

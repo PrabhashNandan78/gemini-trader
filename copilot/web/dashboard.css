@@ -500,6 +500,12 @@ body.dark-theme {
   color: var(--accent);
 }
 
+.chart-badge.error {
+  background-color: rgba(255, 61, 113, 0.2);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+
 .chart-controls {
   display: flex;
   align-items: center;
@@ -773,3 +779,4 @@ body.dark-theme {
   border: 1px solid rgba(255, 170, 0, 0.4);
   color: #ffbb33;
 }
+

@@ -147,3 +147,4 @@ The system combines:
   - Chrome/Edge browser toolbar companion.
   - Synchronizes active symbol with TradingView chart tabs via title inspection without DOM scraping or platform violations.
   - Allows 1-click 3:1 setup analysis and emergency kill switch execution.
+

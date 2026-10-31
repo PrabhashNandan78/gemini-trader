@@ -131,3 +131,4 @@ This generates asymmetric profitability even during extended consolidation phase
 | **Sub-3:1 Net R:R Setup** | Gross target is reachable but friction erodes net expectancy. | `TransactionCostModel` evaluates net reward after fees. If net R:R < 3.0, order ticket is automatically suppressed. |
 | **Excessive Daily Drawdown** | Consecutive loss clusters due to intraday news shock. | `RiskAndSizingEngine` tracks `daily_realized_loss`. If daily loss limit is reached, all trading halts immediately until the next calendar day. |
 | **Flash Crash / Liquidity Vacuum** | Wide bid-ask spreads and severe slippage. | Global emergency stop kill switch cancels all pending orders and liquidates positions at current market. |
+

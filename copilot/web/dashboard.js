@@ -231,21 +231,37 @@ function renderStatus(data) {
 }
 
 async function fetchChartData() {
+  state.chartErrorMessage = null;
+  el.chartDataBadge.textContent = 'Loading...';
+  el.chartDataBadge.className = 'chart-badge';
+  
   try {
-    el.chartDataBadge.textContent = 'Loading...';
     const res = await fetch(`/api/chart?symbol=${encodeURIComponent(state.currentSymbol)}&market=${state.currentMarket}&interval=5m&count=80`);
+    if (!res.ok) {
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        errMsg = errJson.error || errMsg;
+      } catch (e) {}
+      throw new Error(errMsg);
+    }
     const data = await res.json();
     state.chartData = data;
     state.activeBars = data.bars || [];
 
-    el.chartDataBadge.textContent = data.source === 'live_provider' ? 'Live Data' : 'Simulated Data';
+    el.chartDataBadge.textContent = data.source || 'Live Data';
+    el.chartDataBadge.className = 'chart-badge';
     if (data.regime) {
       updateRegimeBadge(data.regime);
     }
     drawChart();
   } catch (err) {
+    state.activeBars = [];
+    state.chartErrorMessage = err.message || 'Data Error';
     el.chartDataBadge.textContent = 'Data Error';
+    el.chartDataBadge.className = 'chart-badge error';
     console.error('Failed to fetch chart:', err);
+    drawChart();
   }
 }
 
@@ -605,20 +621,29 @@ function initChartCanvas() {
 }
 
 function drawChart() {
-  if (!ctx || !state.activeBars || state.activeBars.length === 0) return;
+  if (!ctx) return;
 
   const canvas = el.chartCanvas;
-  const rect = canvas.parentElement.getBoundingClientRect();
-  canvas.width = rect.width * window.devicePixelRatio;
-  canvas.height = rect.height * window.devicePixelRatio;
-  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  if (!canvas || !canvas.parentElement) return;
 
-  const width = rect.width;
-  const height = rect.height;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const width = Math.max(200, rect.width || 800);
+  const height = Math.max(150, rect.height || 450);
+  canvas.width = width * window.devicePixelRatio;
+  canvas.height = height * window.devicePixelRatio;
+  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
 
   // Clear background
   ctx.fillStyle = '#0b0e14';
   ctx.fillRect(0, 0, width, height);
+
+  if (!state.activeBars || state.activeBars.length === 0) {
+    ctx.fillStyle = state.chartErrorMessage ? '#f85149' : '#8b9bb4';
+    ctx.font = '13px SF Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(state.chartErrorMessage || 'Select an instrument or click Refresh to load real market candles.', width / 2, height / 2);
+    return;
+  }
 
   const bars = state.activeBars;
   const n = bars.length;
@@ -632,10 +657,10 @@ function drawChart() {
   let maxPrice = -Infinity;
 
   bars.forEach(b => {
-    if (b.low < minPrice) minPrice = b.low;
-    if (b.high > maxPrice) maxPrice = b.high;
-    if (b.bb_lower && b.bb_lower < minPrice) minPrice = b.bb_lower;
-    if (b.bb_upper && b.bb_upper > maxPrice) maxPrice = b.bb_upper;
+    if (b.low != null && b.low < minPrice) minPrice = b.low;
+    if (b.high != null && b.high > maxPrice) maxPrice = b.high;
+    if (b.bb_lower != null && !isNaN(b.bb_lower) && b.bb_lower < minPrice) minPrice = b.bb_lower;
+    if (b.bb_upper != null && !isNaN(b.bb_upper) && b.bb_upper > maxPrice) maxPrice = b.bb_upper;
   });
 
   // Include planned ticket lines in price bounds
@@ -651,7 +676,7 @@ function drawChart() {
   const finalRange = maxPrice - minPrice;
 
   const getY = (val) => chartH - ((val - minPrice) / finalRange) * chartH;
-  const getX = (i) => (i / (n - 1)) * (chartW - 20) + 10;
+  const getX = (i) => (i / Math.max(1, n - 1)) * (chartW - 20) + 10;
   const barWidth = Math.max(2, (chartW / n) * 0.65);
 
   // Draw Grid lines
@@ -672,6 +697,25 @@ function drawChart() {
 
     // Price label on right
     ctx.fillText(formatNumber(yPrice), chartW + 6, yPos + 3);
+  }
+
+  // Draw X-axis time labels along the bottom
+  ctx.fillStyle = '#8b9bb4';
+  ctx.font = '9px SF Mono, monospace';
+  ctx.textAlign = 'center';
+  const timeStep = Math.max(1, Math.floor(n / 6));
+  for (let i = 0; i < n; i += timeStep) {
+    const xPos = getX(i);
+    const b = bars[i];
+    let timeStr = '';
+    if (b.datetime) {
+      const parts = b.datetime.split(' ');
+      timeStr = parts.length > 1 ? parts[1].substring(0, 5) : parts[0];
+    } else if (b.time) {
+      const d = new Date(b.time * 1000);
+      timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    ctx.fillText(timeStr, xPos, height - 8);
   }
 
   // Draw Bollinger Bands cloud
@@ -816,3 +860,4 @@ function formatNumber(num) {
   if (num === null || num === undefined || isNaN(num)) return '0.00';
   return Number(num).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+

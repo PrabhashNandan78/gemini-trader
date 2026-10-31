@@ -41,18 +41,32 @@ async function fetchCopilotStatus() {
 }
 
 async function syncSymbolFromActiveTab() {
+  const syncStatusEl = document.getElementById('syncStatus');
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && tab.id) {
       chrome.tabs.sendMessage(tab.id, { action: 'GET_ACTIVE_SYMBOL' }, (response) => {
         if (chrome.runtime.lastError || !response) {
-          // Tab fallback: parse title
-          if (tab.title) {
+          // Tab fallback: parse title if URL looks like tradingview
+          if (tab.title && (tab.url || '').includes('tradingview.com')) {
             const sym = tab.title.split(' ')[0];
             document.getElementById('symbolInput').value = sym;
+            if (syncStatusEl) {
+              syncStatusEl.style.display = 'block';
+              syncStatusEl.textContent = 'TradingView tab detected. Candles analyzed via Copilot backend (not DOM scraping).';
+            }
+          } else {
+            if (syncStatusEl) {
+              syncStatusEl.style.display = 'block';
+              syncStatusEl.textContent = 'Active tab is not TradingView. Enter ticker manually.';
+            }
           }
         } else if (response.symbol) {
           document.getElementById('symbolInput').value = response.symbol;
+          if (syncStatusEl) {
+            syncStatusEl.style.display = 'block';
+            syncStatusEl.textContent = response.dataNotice || 'TradingView tab synced. Evaluating via Copilot backend.';
+          }
         }
       });
     }
@@ -167,3 +181,4 @@ async function triggerKillSwitch() {
     alert(`Emergency stop failed: ${err}`);
   }
 }
+

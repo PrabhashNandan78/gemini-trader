@@ -620,3 +620,4 @@ def create_broker_adapter(
         return AlpacaBrokerAdapter(mode=mode, user_config=user_config)
     else:
         return PaperBrokerAdapter(paper_engine=paper_engine, user_config=user_config)
+

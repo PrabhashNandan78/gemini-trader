@@ -75,3 +75,4 @@ Before placing any order in Live mode, the system automatically verifies all 9 s
 - [ ] **Gate 7 (Position Sizing)**: Quantity is bounded by the smallest of risk budget, max allocation, cash buffer, and portfolio exposure.
 - [ ] **Gate 8 (Minimum Order)**: Sized quantity meets exchange minimums (minimum 1 whole share on NSE).
 - [ ] **Gate 9 (Explicit Confirmation)**: Order payload includes `confirm_live=True` with broker authentication verified.
+
