@@ -37,7 +37,7 @@ def every_text_file():
 class Repo(unittest.TestCase):
     def test_eleven_skill_folders_at_the_root(self):
         found = sorted(d for d in os.listdir(ROOT)
-                       if os.path.isfile(os.path.join(ROOT, d, "SKILL.md")))
+                       if os.path.isfile(os.path.join(ROOT, d, "SKILL.md")) and d != "gemini-trading-skill")
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):

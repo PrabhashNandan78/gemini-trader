@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Gemini Tool Declarations for Day Trading Skill (NSE, Crypto & US)",
+  "tools": [
+    {
+      "name": "analyze_symbol",
+      "description": "Analyze an Indian stock (e.g. RELIANCE.NS, TCS.NS), cryptocurrency (e.g. BTC-USD, ETH-USD), or US stock for market data, news catalysts, setup trigger state, and entry/exit levels.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "symbol": {
+            "type": "STRING",
+            "description": "Ticker symbol (e.g. 'RELIANCE.NS', 'BTC-USD', 'TSLA', '^NSEI')."
+          },
+          "setup": {
+            "type": "STRING",
+            "enum": [
+              "orb",
+              "level",
+              "daily"
+            ],
+            "description": "Setup type to evaluate. 'orb' = 15-minute opening-range breakout, 'level' = key price level, 'daily' = daily closing pattern."
+          }
+        },
+        "required": [
+          "symbol"
+        ]
+      }
+    },
+    {
+      "name": "scan_market",
+      "description": "Scan a configured market watchlist for day-trading setups (opening-range breakouts, 20-day high breakouts, bull flags, oversold bounces).",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "market": {
+            "type": "STRING",
+            "enum": [
+              "india",
+              "crypto",
+              "us"
+            ],
+            "description": "Market to scan: 'india' (NSE equities), 'crypto' (major crypto pairs), or 'us' (US equities)."
+          },
+          "setup": {
+            "type": "STRING",
+            "enum": [
+              "daily",
+              "orb"
+            ],
+            "description": "Scan mode: 'daily' (pre-market daily close setups) or 'orb' (intraday opening-range breakout)."
+          },
+          "limit": {
+            "type": "INTEGER",
+            "description": "Maximum number of symbols to scan."
+          }
+        },
+        "required": [
+          "market"
+        ]
+      }
+    },
+    {
+      "name": "backtest_strategy",
+      "description": "Backtest a trading setup using the Time Machine Monte Carlo simulation and historical replay. Replays 10,000 runs using the asset's own historical 5-minute bars.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "symbol": {
+            "type": "STRING",
+            "description": "Ticker symbol to backtest (e.g. 'RELIANCE.NS', 'BTC-USD', 'TSLA')."
+          },
+          "replays": {
+            "type": "INTEGER",
+            "description": "Number of Monte Carlo replay paths (default 10000)."
+          },
+          "seed": {
+            "type": "INTEGER",
+            "description": "Random seed for reproducible draws (default 19)."
+          }
+        },
+        "required": [
+          "symbol"
+        ]
+      }
+    },
+    {
+      "name": "evaluate_risk",
+      "description": "Run deterministic pre-trade risk checks against account limits, stop-loss requirements, position caps, and market trading sessions.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "symbol": {
+            "type": "STRING",
+            "description": "Asset symbol (e.g. 'RELIANCE.NS', 'BTC-USD')."
+          },
+          "side": {
+            "type": "STRING",
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "description": "Order side."
+          },
+          "qty": {
+            "type": "NUMBER",
+            "description": "Proposed order quantity."
+          },
+          "entry_price": {
+            "type": "NUMBER",
+            "description": "Proposed entry price."
+          },
+          "stop_loss": {
+            "type": "NUMBER",
+            "description": "Proposed stop-loss price."
+          },
+          "take_profit": {
+            "type": "NUMBER",
+            "description": "Proposed take-profit price."
+          }
+        },
+        "required": [
+          "symbol",
+          "side",
+          "qty",
+          "entry_price",
+          "stop_loss",
+          "take_profit"
+        ]
+      }
+    },
+    {
+      "name": "paper_trade",
+      "description": "Size a proposed day trade according to account budget and risk limits, run pre-trade validation, and generate a paper-trading bracket ticket.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "symbol": {
+            "type": "STRING",
+            "description": "Asset ticker to paper trade."
+          },
+          "side": {
+            "type": "STRING",
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "description": "Order side (default 'buy')."
+          },
+          "budget": {
+            "type": "NUMBER",
+            "description": "Account budget override for sizing."
+          },
+          "execute": {
+            "type": "BOOLEAN",
+            "description": "Whether to record a simulated paper fill in the local portfolio."
+          }
+        },
+        "required": [
+          "symbol"
+        ]
+      }
+    },
+    {
+      "name": "get_market_clock",
+      "description": "Check whether an asset's exchange is currently open, regular session hours, local time, and exchange holiday schedule.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "symbol": {
+            "type": "STRING",
+            "description": "Symbol to check market hours for (e.g. 'RELIANCE.NS', 'BTC-USD', 'AAPL')."
+          }
+        }
+      }
+    }
+  ]
+}
