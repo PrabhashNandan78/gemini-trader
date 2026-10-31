@@ -377,8 +377,13 @@ class MarketRegimeDetector:
         b_l = bb_l[-1] if bb_l and not math.isnan(bb_l[-1]) else curr_price * 0.98
 
         # Relative Volume (RVOL)
+        # Note: Index cash feeds (e.g. ^NSEI, ^NSEBANK) do not report trading volume.
+        # When all volumes are zero, default RVOL to 1.0 (adequate) rather than falsely penalizing as illiquid.
         vol_sma20 = sum(vols[-20:]) / 20.0 if len(vols) >= 20 else (sum(vols) / max(len(vols), 1))
-        rvol = round(vols[-1] / max(vol_sma20, 1.0), 2) if vols else 1.0
+        if vol_sma20 > 0:
+            rvol = round(vols[-1] / vol_sma20, 2)
+        else:
+            rvol = 1.0
 
         snapshot = IndicatorSnapshot(
             price=round(curr_price, 4),

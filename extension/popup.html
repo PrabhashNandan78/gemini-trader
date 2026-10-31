@@ -26,9 +26,17 @@
   </div>
 
   <div class="symbol-box">
-    <span class="label">Active Symbol:</span>
+    <span class="label">Active Symbol & Timeframe:</span>
     <div class="symbol-input-group">
-      <input type="text" id="symbolInput" value="RELIANCE.NS" class="symbol-input">
+      <input type="text" id="symbolInput" value="NSE:NIFTY1!" class="symbol-input">
+      <select id="intervalSelect" class="symbol-input" style="width: 65px; padding: 4px;">
+        <option value="1m">1m</option>
+        <option value="5m">5m</option>
+        <option value="15m" selected>15m</option>
+        <option value="30m">30m</option>
+        <option value="60m">1h</option>
+        <option value="1d">1D</option>
+      </select>
       <button id="btnSyncTab" class="btn btn-sm btn-outline" title="Sync from TradingView Tab">🔄 Tab</button>
     </div>
     <div id="syncStatus" class="sync-status" style="display: none; font-size: 10px; color: #8b949e; line-height: 1.2; margin-top: 3px;"></div>

@@ -63,6 +63,9 @@ async function syncSymbolFromActiveTab() {
           }
         } else if (response.symbol) {
           document.getElementById('symbolInput').value = response.symbol;
+          if (response.interval && document.getElementById('intervalSelect')) {
+            document.getElementById('intervalSelect').value = response.interval;
+          }
           if (syncStatusEl) {
             syncStatusEl.style.display = 'block';
             syncStatusEl.textContent = response.dataNotice || 'TradingView tab synced. Evaluating via Copilot backend.';
@@ -77,6 +80,8 @@ async function syncSymbolFromActiveTab() {
 
 async function runCopilotAnalysis() {
   const sym = document.getElementById('symbolInput').value.trim();
+  const intervalEl = document.getElementById('intervalSelect');
+  const interval = intervalEl ? intervalEl.value : '15m';
   const btn = document.getElementById('btnAnalyze');
   btn.disabled = true;
   btn.textContent = 'Analyzing...';
@@ -85,7 +90,7 @@ async function runCopilotAnalysis() {
     const res = await fetch(`${API_BASE}/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol: sym })
+      body: JSON.stringify({ symbol: sym, interval: interval })
     });
     const data = await res.json();
     currentAnalysis = data.analysis;

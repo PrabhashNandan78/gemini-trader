@@ -5,7 +5,8 @@
 // Application State
 const state = {
   currentMarket: 'NSE',
-  currentSymbol: 'RELIANCE.NS',
+  currentSymbol: 'NSE:NIFTY1!',
+  currentInterval: '15m',
   currentAnalysis: null,
   activeBars: [],
   chartData: null,
@@ -16,6 +17,8 @@ const state = {
 // Default Watchlists by Market
 const WATCHLISTS = {
   NSE: [
+    { symbol: 'NSE:NIFTY1!', name: 'NIFTY 50 Futures / Continuous' },
+    { symbol: 'NSE:BANKNIFTY1!', name: 'BANK NIFTY Futures / Continuous' },
     { symbol: 'RELIANCE.NS', name: 'Reliance Industries Ltd' },
     { symbol: 'TCS.NS', name: 'Tata Consultancy Services' },
     { symbol: 'INFY.NS', name: 'Infosys Limited' },
@@ -50,6 +53,7 @@ const el = {
   watchlistContainer: document.getElementById('watchlistContainer'),
   chartSymbol: document.getElementById('chartSymbol'),
   chartInterval: document.getElementById('chartInterval'),
+  selectInterval: document.getElementById('selectInterval'),
   chartDataBadge: document.getElementById('chartDataBadge'),
   chartCanvas: document.getElementById('chartCanvas'),
   chartTooltip: document.getElementById('chartTooltip'),
@@ -185,6 +189,12 @@ function initModals() {
 function bindEvents() {
   el.btnAnalyzeSetup.addEventListener('click', analyzeSetup);
   el.btnRefreshChart.addEventListener('click', fetchChartData);
+  if (el.selectInterval) {
+    el.selectInterval.addEventListener('change', (e) => {
+      state.currentInterval = e.target.value;
+      fetchChartData();
+    });
+  }
   el.btnExecuteOrder.addEventListener('click', executeOrder);
   el.btnEmergencyStop.addEventListener('click', triggerEmergencyStop);
 
@@ -234,9 +244,16 @@ async function fetchChartData() {
   state.chartErrorMessage = null;
   el.chartDataBadge.textContent = 'Loading...';
   el.chartDataBadge.className = 'chart-badge';
+  const interval = state.currentInterval || '15m';
+  if (el.chartInterval) {
+    el.chartInterval.textContent = `${interval} Intraday`;
+  }
+  if (el.selectInterval) {
+    el.selectInterval.value = interval;
+  }
   
   try {
-    const res = await fetch(`/api/chart?symbol=${encodeURIComponent(state.currentSymbol)}&market=${state.currentMarket}&interval=5m&count=80`);
+    const res = await fetch(`/api/chart?symbol=${encodeURIComponent(state.currentSymbol)}&market=${state.currentMarket}&interval=${interval}&count=80`);
     if (!res.ok) {
       let errMsg = `HTTP ${res.status}`;
       try {
@@ -249,7 +266,10 @@ async function fetchChartData() {
     state.chartData = data;
     state.activeBars = data.bars || [];
 
-    el.chartDataBadge.textContent = data.source || 'Live Data';
+    if (el.chartSymbol) {
+      el.chartSymbol.textContent = data.display_name || data.symbol || state.currentSymbol;
+    }
+    el.chartDataBadge.textContent = data.source || data.feed_label || 'Live Data';
     el.chartDataBadge.className = 'chart-badge';
     if (data.regime) {
       updateRegimeBadge(data.regime);
@@ -281,6 +301,7 @@ function updateRegimeBadge(regime) {
 async function analyzeSetup() {
   el.btnAnalyzeSetup.disabled = true;
   el.btnAnalyzeSetup.textContent = 'Analyzing...';
+  const interval = state.currentInterval || '15m';
   try {
     const res = await fetch('/api/analyze', {
       method: 'POST',
@@ -288,6 +309,7 @@ async function analyzeSetup() {
       body: JSON.stringify({
         symbol: state.currentSymbol,
         market: state.currentMarket,
+        interval: interval,
       })
     });
     const result = await res.json();

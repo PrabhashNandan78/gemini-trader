@@ -1,0 +1,422 @@
+/* ===================================================================
+   AI Trading Copilot - TradingView Companion Panel Stylesheet
+   Strictly scoped to #ai-copilot-tv-container to prevent TV style bleed.
+   =================================================================== */
+
+#ai-copilot-tv-container {
+  position: fixed;
+  top: 65px;
+  right: 20px;
+  width: 330px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 85px);
+  background: #0d121c;
+  color: #e6edf3;
+  border: 1px solid #1f293d;
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  z-index: 2147483647;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+  overflow: hidden;
+  transition: box-shadow 0.2s ease;
+}
+
+#ai-copilot-tv-container * {
+  box-sizing: border-box;
+}
+
+/* Header */
+.tv-copilot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: #131a26;
+  border-bottom: 1px solid #1f293d;
+  cursor: grab;
+}
+
+.tv-copilot-header:active {
+  cursor: grabbing;
+}
+
+.tv-copilot-title-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tv-copilot-logo {
+  font-size: 14px;
+}
+
+.tv-copilot-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #ffffff;
+}
+
+.tv-copilot-version {
+  font-size: 9px;
+  background: #1e293b;
+  color: #94a3b8;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+.tv-copilot-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tv-copilot-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.tv-copilot-status-dot.online {
+  background: #00e676;
+  box-shadow: 0 0 8px rgba(0, 230, 118, 0.6);
+}
+
+.tv-copilot-status-dot.offline {
+  background: #ff3d71;
+  box-shadow: 0 0 8px rgba(255, 61, 113, 0.6);
+}
+
+.tv-copilot-status-dot.connecting {
+  background: #ffaa00;
+  box-shadow: 0 0 8px rgba(255, 170, 0, 0.6);
+}
+
+.tv-copilot-btn-icon {
+  background: transparent;
+  border: none;
+  color: #8b9bb4;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.tv-copilot-btn-icon:hover {
+  background: #1e293b;
+  color: #ffffff;
+}
+
+/* Body */
+.tv-copilot-body {
+  padding: 10px 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 140px);
+}
+
+/* Cards & Sections */
+.tv-copilot-card {
+  background: #111722;
+  border: 1px solid #1a2332;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.tv-copilot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.tv-copilot-row:last-child {
+  margin-bottom: 0;
+}
+
+.tv-copilot-label {
+  font-size: 11px;
+  color: #8b9bb4;
+}
+
+.tv-copilot-val {
+  font-size: 11px;
+  font-weight: 600;
+  color: #e6edf3;
+  font-family: monospace;
+}
+
+/* Badges */
+.tv-copilot-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.tv-copilot-badge-market {
+  background: #1a2536;
+  color: #00d2ff;
+  border: 1px solid #23354d;
+}
+
+.tv-copilot-badge-regime {
+  background: #162438;
+  color: #38bdf8;
+  border: 1px solid #203550;
+}
+
+.tv-copilot-badge-buy {
+  background: rgba(0, 230, 118, 0.15);
+  color: #00e676;
+  border: 1px solid #00e676;
+}
+
+.tv-copilot-badge-sell {
+  background: rgba(255, 61, 113, 0.15);
+  color: #ff3d71;
+  border: 1px solid #ff3d71;
+}
+
+.tv-copilot-badge-notrade {
+  background: rgba(139, 155, 180, 0.15);
+  color: #8b9bb4;
+  border: 1px solid #334155;
+}
+
+/* Decision Box */
+.tv-copilot-decision-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #253348;
+}
+
+.tv-copilot-decision-box.buy {
+  background: rgba(0, 230, 118, 0.08);
+  border-color: rgba(0, 230, 118, 0.4);
+}
+
+.tv-copilot-decision-box.sell {
+  background: rgba(255, 61, 113, 0.08);
+  border-color: rgba(255, 61, 113, 0.4);
+}
+
+.tv-copilot-decision-box.notrade {
+  background: rgba(15, 23, 42, 0.6);
+  border-color: #1e293b;
+}
+
+.tv-copilot-decision-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tv-copilot-decision-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tv-copilot-decision-rationale {
+  font-size: 10px;
+  color: #94a3b8;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+/* Ticket Grid */
+.tv-copilot-ticket-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #1e293b;
+}
+
+.tv-copilot-ticket-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.tv-copilot-ticket-label {
+  font-size: 9px;
+  color: #64748b;
+  text-transform: uppercase;
+}
+
+.tv-copilot-ticket-val {
+  font-size: 11px;
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.tv-copilot-ticket-val.green {
+  color: #00e676;
+}
+
+.tv-copilot-ticket-val.red {
+  color: #ff3d71;
+}
+
+.tv-copilot-ticket-val.gold {
+  color: #fbbf24;
+}
+
+/* Timeframe Selector */
+.tv-copilot-select {
+  background: #0d121c;
+  color: #e6edf3;
+  border: 1px solid #253348;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+
+.tv-copilot-select:focus {
+  border-color: #38bdf8;
+}
+
+/* Actions */
+.tv-copilot-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.tv-copilot-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.tv-copilot-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tv-copilot-btn-primary {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.tv-copilot-btn-primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.tv-copilot-btn-success {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.tv-copilot-btn-success:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.tv-copilot-btn-secondary {
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+}
+
+.tv-copilot-btn-secondary:hover:not(:disabled) {
+  background: #334155;
+  color: #ffffff;
+}
+
+.tv-copilot-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #8b9bb4;
+  padding: 2px 4px;
+}
+
+/* Diagnostic Box */
+.tv-copilot-alert {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  display: none;
+}
+
+.tv-copilot-alert.visible {
+  display: block;
+}
+
+/* Collapsed Pill State */
+#ai-copilot-tv-container.collapsed {
+  width: auto;
+  max-width: 380px;
+  background: #0d121c;
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+
+#ai-copilot-tv-container.collapsed .tv-copilot-body {
+  display: none;
+}
+
+#ai-copilot-tv-container.collapsed .tv-copilot-header {
+  border-bottom: none;
+  padding: 6px 12px;
+  border-radius: 20px;
+}
+
+/* Toast */
+.tv-copilot-toast {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  right: 10px;
+  background: #1e293b;
+  color: #ffffff;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 10px;
+  border-left: 3px solid #00e676;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: all 0.2s ease;
+  pointer-events: none;
+}
+
+.tv-copilot-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+

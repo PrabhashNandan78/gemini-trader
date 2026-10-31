@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import re
 import socketserver
 import sys
 import urllib.parse
@@ -148,6 +149,191 @@ def sanitize_for_json(obj: Any) -> Any:
     elif isinstance(obj, (list, tuple)):
         return [sanitize_for_json(v) for v in obj]
     return obj
+
+
+def normalize_market_symbol(raw_symbol: str, market: Optional[str] = None) -> Dict[str, Any]:
+    """Normalizes raw ticker symbols from TradingView or user inputs to verified provider symbols."""
+    raw = raw_symbol.strip()
+    clean = raw.upper().replace("NSE-", "NSE:").replace("BSE-", "BSE:")
+
+    # 1. TradingView Index Futures & Spot Proxies
+    # NIFTY 50 Futures / Continuous
+    if clean in ("NSE:NIFTY1!", "NIFTY1!", "NIFTY", "NSE:NIFTY", "^NSEI", "NIFTY50", "NSE:NIFTY50"):
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": "^NSEI",
+            "market": "NSE",
+            "asset_class": "index_futures",
+            "display_name": "NIFTY 50 (Continuous Futures Proxy)",
+            "source_label": "Delayed (15m NSE Feed - Nifty 50 Index Proxy)",
+            "exchange": "NSE",
+        }
+
+    # BANKNIFTY Futures / Continuous
+    if clean in ("NSE:BANKNIFTY1!", "BANKNIFTY1!", "BANKNIFTY", "NSE:BANKNIFTY", "^NSEBANK", "NSE:BANKNIFTY50"):
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": "^NSEBANK",
+            "market": "NSE",
+            "asset_class": "index_futures",
+            "display_name": "BANK NIFTY (Continuous Futures Proxy)",
+            "source_label": "Delayed (15m NSE Feed - Bank Nifty Index Proxy)",
+            "exchange": "NSE",
+        }
+
+    # 2. Indian Equities (NSE / BSE)
+    if clean.startswith("NSE:"):
+        ticker = clean[4:]
+        mapped = f"{ticker}.NS"
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": mapped,
+            "market": "NSE",
+            "asset_class": "equity_in",
+            "display_name": ticker,
+            "source_label": "Delayed (15m NSE Feed)",
+            "exchange": "NSE",
+        }
+    if clean.startswith("BSE:"):
+        ticker = clean[4:]
+        mapped = f"{ticker}.BO"
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": mapped,
+            "market": "BSE",
+            "asset_class": "equity_in",
+            "display_name": ticker,
+            "source_label": "Delayed (15m BSE Feed)",
+            "exchange": "BSE",
+        }
+    if clean.endswith(".NS") or clean.endswith(".BO"):
+        exch = "NSE" if clean.endswith(".NS") else "BSE"
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": clean,
+            "market": exch,
+            "asset_class": "equity_in",
+            "display_name": clean.split(".")[0],
+            "source_label": f"Delayed (15m {exch} Feed)",
+            "exchange": exch,
+        }
+
+    # 3. Cryptocurrencies (Binance, Coinbase, Spot Pairs)
+    crypto_clean = clean
+    for prefix in ("BINANCE:", "COINBASE:", "BYBIT:", "KRAKEN:"):
+        if crypto_clean.startswith(prefix):
+            crypto_clean = crypto_clean[len(prefix):]
+            break
+
+    if crypto_clean.endswith("USDT"):
+        crypto_mapped = crypto_clean[:-4] + "-USD"
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": crypto_mapped,
+            "market": "CRYPTO",
+            "asset_class": "crypto",
+            "display_name": crypto_clean,
+            "source_label": "Live 24/7 Spot",
+            "exchange": "CRYPTO",
+        }
+    if crypto_clean in ("BTCUSD", "BTC-USD", "BTC/USD"):
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": "BTC-USD",
+            "market": "CRYPTO",
+            "asset_class": "crypto",
+            "display_name": "BTC-USD",
+            "source_label": "Live 24/7 Spot",
+            "exchange": "CRYPTO",
+        }
+    if crypto_clean in ("ETHUSD", "ETH-USD", "ETH/USD"):
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": "ETH-USD",
+            "market": "CRYPTO",
+            "asset_class": "crypto",
+            "display_name": "ETH-USD",
+            "source_label": "Live 24/7 Spot",
+            "exchange": "CRYPTO",
+        }
+    if crypto_clean in ("SOLUSD", "SOL-USD", "SOL/USD"):
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": "SOL-USD",
+            "market": "CRYPTO",
+            "asset_class": "crypto",
+            "display_name": "SOL-USD",
+            "source_label": "Live 24/7 Spot",
+            "exchange": "CRYPTO",
+        }
+    if "-" in crypto_clean and crypto_clean.split("-")[1] in ("USD", "USDT", "INR", "EUR"):
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": crypto_clean,
+            "market": "CRYPTO",
+            "asset_class": "crypto",
+            "display_name": crypto_clean,
+            "source_label": "Live 24/7 Spot",
+            "exchange": "CRYPTO",
+        }
+
+    # 4. US Equities
+    us_clean = clean
+    for prefix in ("NASDAQ:", "NYSE:", "AMEX:"):
+        if us_clean.startswith(prefix):
+            us_clean = us_clean[len(prefix):]
+            break
+    if us_clean in ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "SPY", "QQQ"):
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": us_clean,
+            "market": "US",
+            "asset_class": "equity_us",
+            "display_name": us_clean,
+            "source_label": "Live / Delayed US Feed",
+            "exchange": "US",
+        }
+
+    # 5. Known Indian Equities without prefix
+    COMMON_NSE_TICKERS = {
+        "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "BHARTIARTL",
+        "ITC", "LT", "TATAMOTORS", "HINDUNILVR", "AXISBANK", "KOTAKBANK",
+        "WIPRO", "MARUTI", "BAJFINANCE", "ASIANPAINT", "TITAN", "NIFTYBEES"
+    }
+    if clean in COMMON_NSE_TICKERS:
+        return {
+            "supported": True,
+            "original_symbol": raw,
+            "mapped_symbol": f"{clean}.NS",
+            "market": "NSE",
+            "asset_class": "equity_in",
+            "display_name": clean,
+            "source_label": "Delayed (15m NSE Feed)",
+            "exchange": "NSE",
+        }
+
+    # 6. Unsupported / Unmapped Symbol
+    return {
+        "supported": False,
+        "original_symbol": raw,
+        "mapped_symbol": None,
+        "market": market or "UNKNOWN",
+        "asset_class": "unknown",
+        "display_name": raw,
+        "source_label": "Unsupported Feed",
+        "reason": f"UNSUPPORTED SYMBOL: '{raw}' has no verified market data feed mapping.",
+    }
 
 
 class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -311,8 +497,8 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json_response({"error": "Missing or empty 'symbol' parameter", "status": "ERROR"}, status=400)
             return
 
-        symbol = symbols[0].strip().upper()
-        market = query.get("market", ["NSE"])[0].upper()
+        raw_symbol = symbols[0].strip()
+        market_param = query.get("market", ["NSE"])[0].upper()
         interval = query.get("interval", ["5m"])[0].lower()
         try:
             count = max(10, min(500, int(query.get("count", ["80"])[0])))
@@ -324,10 +510,24 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         if interval not in allowed_intervals:
             self._send_json_response({
                 "error": f"Unsupported interval '{interval}'. Supported intervals: {', '.join(allowed_intervals)}",
-                "symbol": symbol,
+                "symbol": raw_symbol,
                 "status": "ERROR"
             }, status=400)
             return
+
+        # Normalize symbol
+        sym_info = normalize_market_symbol(raw_symbol, market=market_param)
+        if not sym_info["supported"]:
+            self._send_json_response({
+                "error": sym_info.get("reason", f"Unsupported symbol '{raw_symbol}'"),
+                "symbol": raw_symbol,
+                "status": "UNSUPPORTED_SYMBOL"
+            }, status=400)
+            return
+
+        mapped_symbol = sym_info["mapped_symbol"]
+        source_label = sym_info["source_label"]
+        market = sym_info["market"]
 
         # Map interval to historical range
         if interval in ("1m", "2m"):
@@ -342,21 +542,23 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Fetch real candles from MarketDataProvider
         bars = []
         try:
-            _, fetched_bars, meta = SERVER_STATE.market_data.get_bars(symbol=symbol, range_str=range_str, interval=interval)
+            _, fetched_bars, meta = SERVER_STATE.market_data.get_bars(symbol=mapped_symbol, range_str=range_str, interval=interval)
             if fetched_bars:
                 bars = fetched_bars[-count:]
         except MarketDataError as e:
             self._send_json_response({
-                "error": f"Market data provider error for {symbol}: {str(e)}",
-                "symbol": symbol,
+                "error": f"Market data provider error for {raw_symbol} ({mapped_symbol}): {str(e)}",
+                "symbol": raw_symbol,
+                "mapped_symbol": mapped_symbol,
                 "market": market,
                 "status": "ERROR"
             }, status=502)
             return
         except Exception as e:
             self._send_json_response({
-                "error": f"Failed to retrieve market data for {symbol}: {str(e)}",
-                "symbol": symbol,
+                "error": f"Failed to retrieve market data for {raw_symbol} ({mapped_symbol}): {str(e)}",
+                "symbol": raw_symbol,
+                "mapped_symbol": mapped_symbol,
                 "market": market,
                 "status": "ERROR"
             }, status=502)
@@ -364,20 +566,13 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if not bars or len(bars) < 5:
             self._send_json_response({
-                "error": f"No candles available for {symbol} at interval {interval}",
-                "symbol": symbol,
+                "error": f"No candles available for {raw_symbol} ({mapped_symbol}) at interval {interval}",
+                "symbol": raw_symbol,
+                "mapped_symbol": mapped_symbol,
                 "market": market,
                 "status": "NO_DATA"
             }, status=404)
             return
-
-        # Accurate data source labeling
-        if symbol.endswith(".NS") or symbol.endswith(".BO") or market == "NSE":
-            source_label = "Delayed (15m NSE Feed)"
-        elif any(c in symbol for c in ["-USD", "/USD", "USDT"]) or market in ("CRYPTO", "BINANCE"):
-            source_label = "Live 24/7 Spot"
-        else:
-            source_label = "Live / Delayed US Feed"
 
         # Sort bars chronologically
         bars.sort(key=lambda b: b["timestamp"])
@@ -420,9 +615,13 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             })
 
         self._send_json_response({
-            "symbol": symbol,
+            "symbol": raw_symbol,
+            "mapped_symbol": mapped_symbol,
+            "display_name": sym_info.get("display_name", raw_symbol),
             "market": market,
             "source": source_label,
+            "feed_label": source_label,
+            "interval": interval,
             "regime": regime_info,
             "bars_count": len(chart_bars),
             "bars": chart_bars,
@@ -430,13 +629,54 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_post_analyze(self, payload: Dict[str, Any]) -> None:
         global SERVER_STATE
-        symbol = str(payload.get("symbol", "RELIANCE.NS")).strip().upper()
-        market = str(payload.get("market", SERVER_STATE.user_config.market)).strip().upper()
+        raw_symbol = str(payload.get("symbol", "RELIANCE.NS")).strip()
+        market_param = str(payload.get("market", SERVER_STATE.user_config.market)).strip().upper()
+        interval = str(payload.get("interval", "5m")).strip().lower()
+
+        allowed_intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "1h", "1d"]
+        if interval not in allowed_intervals:
+            interval = "5m"
+
+        sym_info = normalize_market_symbol(raw_symbol, market=market_param)
+        if not sym_info["supported"]:
+            self._send_json_response({
+                "analysis": {
+                    "decision": "NO_TRADE",
+                    "selected_strategy": None,
+                    "regime": {
+                        "regime": "UNKNOWN",
+                        "trend_strength": "NONE",
+                        "volatility_state": "UNKNOWN",
+                        "adx": 0.0,
+                        "confidence": 0.0,
+                    },
+                    "ticket": None,
+                    "reasons": [sym_info.get("reason", f"Unsupported symbol: {raw_symbol}")],
+                },
+                "symbol": raw_symbol,
+                "status": "UNSUPPORTED_SYMBOL",
+                "market_tick_events": [],
+            }, status=400)
+            return
+
+        mapped_symbol = sym_info["mapped_symbol"]
+        source_label = sym_info["source_label"]
+        market = sym_info["market"]
+
+        # Map interval to historical range
+        if interval in ("1m", "2m"):
+            range_str = "1d"
+        elif interval in ("5m", "15m", "30m"):
+            range_str = "5d"
+        elif interval in ("60m", "1h"):
+            range_str = "1mo"
+        else:
+            range_str = "6mo"
 
         # Fetch real bars
         bars = []
         try:
-            _, fetched_bars, _ = SERVER_STATE.market_data.get_bars(symbol=symbol, range_str="5d", interval="5m")
+            _, fetched_bars, _ = SERVER_STATE.market_data.get_bars(symbol=mapped_symbol, range_str=range_str, interval=interval)
             if fetched_bars and len(fetched_bars) >= 20:
                 bars = fetched_bars
         except Exception as e:
@@ -452,8 +692,10 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
                         "confidence": 0.0,
                     },
                     "ticket": None,
-                    "reasons": [f"Market data provider error for {symbol}: {str(e)}"],
+                    "reasons": [f"Market data provider error for {raw_symbol} ({mapped_symbol}): {str(e)}"],
                 },
+                "symbol": raw_symbol,
+                "mapped_symbol": mapped_symbol,
                 "market_tick_events": [],
                 "error": str(e),
             }, status=502)
@@ -472,8 +714,10 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
                         "confidence": 0.0,
                     },
                     "ticket": None,
-                    "reasons": [f"Insufficient historical bars ({len(bars)}/20) for {symbol} to establish statistical regime."],
+                    "reasons": [f"Insufficient historical bars ({len(bars)}/20) for {raw_symbol} ({mapped_symbol}) at interval {interval}."],
                 },
+                "symbol": raw_symbol,
+                "mapped_symbol": mapped_symbol,
                 "market_tick_events": [],
             }, status=404)
             return
@@ -481,22 +725,21 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Run adaptive strategy engine
         analysis = SERVER_STATE.strategy_engine.analyze_and_generate_ticket(
             bars=bars,
-            symbol=symbol,
+            symbol=mapped_symbol,
             market=market,
             user_config=SERVER_STATE.user_config,
         )
 
         # Feed latest tick into paper engine to trigger pending stops/targets
         latest_bar = bars[-1]
-        events = SERVER_STATE.paper_engine.process_market_tick(symbol, latest_bar)
+        events = SERVER_STATE.paper_engine.process_market_tick(mapped_symbol, latest_bar)
 
         self._send_json_response({
-            "analysis": analysis,
-            "market_tick_events": events,
-        })
-        events = SERVER_STATE.paper_engine.process_market_tick(symbol, latest_bar)
-
-        self._send_json_response({
+            "symbol": raw_symbol,
+            "mapped_symbol": mapped_symbol,
+            "display_name": sym_info.get("display_name", raw_symbol),
+            "feed_label": source_label,
+            "interval": interval,
             "analysis": analysis,
             "market_tick_events": events,
         })
