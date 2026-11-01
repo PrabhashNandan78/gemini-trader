@@ -1034,6 +1034,8 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             "market_tick_events": events,
             "stale_data_warning": stale_msg,
             "data_health": health_info,
+            "auto_execute_paper": SERVER_STATE.user_config.auto_execute_paper,
+            "new_entries_paused": SERVER_STATE.user_config.new_entries_paused,
         })
 
     def handle_post_close_all(self) -> None:
@@ -1222,6 +1224,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     global SERVER_STATE
     SERVER_STATE = CopilotServerState()
 
+    socketserver.TCPServer.allow_reuse_address = True
     server_address = (host, port)
     httpd = socketserver.TCPServer(server_address, CopilotRequestHandler)
     print(f"================================================================")

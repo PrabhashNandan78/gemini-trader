@@ -506,8 +506,9 @@
     // Pause New Entries toggle button
     btnPauseEntries.addEventListener('click', async () => {
       try {
-        const res = await apiCall('/pause', 'POST', {});
-        STATE.newEntriesPaused = res.new_entries_paused;
+        const endpoint = STATE.newEntriesPaused ? '/resume' : '/pause';
+        const res = await apiCall(endpoint, 'POST', {});
+        STATE.newEntriesPaused = !!res.new_entries_paused;
         updatePauseButtonState(btnPauseEntries, STATE.newEntriesPaused);
         showToast(STATE.newEntriesPaused ? 'New Entries PAUSED' : 'New Entries ACTIVE');
       } catch (err) {
@@ -754,6 +755,17 @@
 
       if (dot) dot.className = 'tv-copilot-status-dot online';
       if (alertBox) alertBox.classList.remove('visible');
+
+      if (typeof data.auto_execute_paper === 'boolean') {
+        STATE.autoExecutePaper = data.auto_execute_paper;
+        const checkAutoPaper = document.getElementById('tvCheckAutoPaper');
+        if (checkAutoPaper) checkAutoPaper.checked = STATE.autoExecutePaper;
+      }
+      if (typeof data.new_entries_paused === 'boolean') {
+        STATE.newEntriesPaused = data.new_entries_paused;
+        const btnPause = document.getElementById('tvBtnPauseEntries');
+        if (btnPause) updatePauseButtonState(btnPause, STATE.newEntriesPaused);
+      }
 
       renderAnalysisResult(data);
 
