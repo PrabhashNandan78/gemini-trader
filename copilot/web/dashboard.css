@@ -861,3 +861,73 @@ body.dark-theme {
   color: #ffbb33;
 }
 
+/* SIGNAL & EXECUTION DIAGNOSTICS */
+.diagnostics-card .card-body {
+  padding: 12px;
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.diag-item {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  background-color: #0b0f17;
+  border-radius: 4px;
+  border: 1px solid #1a2233;
+}
+
+.diag-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.diag-val {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-white);
+  margin-top: 2px;
+}
+
+.diag-reason-box {
+  margin-top: 8px;
+  padding: 8px;
+  background-color: rgba(15, 23, 42, 0.6);
+  border: 1px dashed #334155;
+  border-radius: 4px;
+}
+
+.diag-reason-label {
+  font-size: 10px;
+  color: #94a3b8;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.diag-reason-text {
+  font-size: 11px;
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  margin-top: 4px;
+  word-break: break-word;
+}
+
+.status-fallback {
+  background-color: rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+  border: 1px solid #64748b;
+}
+
+.status-nofeed {
+  background-color: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border: 1px solid #ef4444;
+}
+

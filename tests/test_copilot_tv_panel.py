@@ -218,6 +218,95 @@ class TestTradingViewServerEndpoints(unittest.TestCase):
         self.assertIn("CHART CONTEXT UNVERIFIED", body["error"])
         self.assertEqual(body["analysis"]["decision"], "NO_TRADE")
 
+    def test_cors_preflight_and_private_network_headers(self):
+        """Verifies that OPTIONS preflight returns 204 with Private Network Access and CORS headers."""
+        url = f"http://127.0.0.1:{self.port}/api/active_context"
+        req = urllib.request.Request(url, method="OPTIONS")
+        req.add_header("Origin", "https://in.tradingview.com")
+        req.add_header("Access-Control-Request-Method", "POST")
+        req.add_header("Access-Control-Request-Headers", "content-type")
+        req.add_header("Access-Control-Request-Private-Network", "true")
+
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertEqual(resp.status, 204)
+            headers = dict(resp.headers)
+            self.assertEqual(headers.get("Access-Control-Allow-Private-Network"), "true")
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), "https://in.tradingview.com")
+            self.assertIn("POST", headers.get("Access-Control-Allow-Methods", ""))
+
+    def test_active_context_post_acceptance(self):
+        """Verifies POST /api/active_context accepts payload and sets active context."""
+        code, body = self._post("/api/active_context", {
+            "raw_symbol": "DELTA:BTCUSD.P",
+            "interval": "15m",
+            "source": "tradingview"
+        })
+        self.assertEqual(code, 200)
+        self.assertTrue(body.get("success"))
+        ctx = body.get("active_context", {})
+        self.assertEqual(ctx.get("symbol"), "BTCUSD")
+        self.assertEqual(ctx.get("raw_symbol"), "DELTA:BTCUSD.P")
+        self.assertTrue(ctx.get("synced"))
+
+
+class TestExtensionManifestAndServiceWorker(unittest.TestCase):
+    """Verifies Chrome Extension Manifest V3 configuration, Service Worker, and content script architecture."""
+
+    def test_manifest_v3_structure_and_permissions(self):
+        import os
+        manifest_path = os.path.join(os.path.dirname(__file__), "..", "extension", "manifest.json")
+        self.assertTrue(os.path.exists(manifest_path))
+
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        self.assertEqual(manifest.get("manifest_version"), 3)
+        self.assertEqual(manifest.get("background", {}).get("service_worker"), "background.js")
+
+        host_perms = manifest.get("host_permissions", [])
+        self.assertIn("http://127.0.0.1:8765/*", host_perms)
+        self.assertIn("http://localhost:8765/*", host_perms)
+
+        scripts = manifest.get("content_scripts", [])
+        self.assertTrue(len(scripts) >= 1)
+        self.assertIn("content.js", scripts[0].get("js", []))
+        self.assertIn("panel.css", scripts[0].get("css", []))
+
+    def test_service_worker_implementation(self):
+        import os
+        bg_path = os.path.join(os.path.dirname(__file__), "..", "extension", "background.js")
+        self.assertTrue(os.path.exists(bg_path))
+
+        with open(bg_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Must handle COPILOT_API_REQUEST and return true for async sendResponse
+        self.assertIn("COPILOT_API_REQUEST", content)
+        self.assertIn("return true", content)
+        # Must have AbortController timeout protection
+        self.assertIn("AbortController", content)
+        # Must classify connection refusal and timeout
+        self.assertIn("CONNECTION_REFUSED", content)
+        self.assertIn("TIMEOUT", content)
+
+    def test_content_script_no_silent_fallback_and_deduplication(self):
+        import os
+        cs_path = os.path.join(os.path.dirname(__file__), "..", "extension", "content.js")
+        self.assertTrue(os.path.exists(cs_path))
+
+        with open(cs_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # apiCall must route through chrome.runtime.sendMessage
+        self.assertIn("chrome.runtime.sendMessage", content)
+        # Must check SERVICE_WORKER_UNAVAILABLE on lastError
+        self.assertIn("SERVICE_WORKER_UNAVAILABLE", content)
+        # Must deduplicate active context announcements
+        self.assertIn("lastAnnouncedKey", content)
+        self.assertIn("isSyncingContext", content)
+        # Must not display offline when server returns valid HTTP error (400)
+        self.assertIn("isHttpAppError", content)
+
 
 if __name__ == "__main__":
     unittest.main()

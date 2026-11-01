@@ -43,6 +43,9 @@ class UserRiskConfig:
     min_planned_rr: float = 3.0             # Strict 3:1 planned reward-to-risk
     auto_execute_paper: bool = False        # Auto paper trade execution toggle (default False)
     new_entries_paused: bool = False        # Pause new entries toggle (default False)
+    reentry_cooldown_sec: int = 60          # Cooldown in seconds before re-entering same instrument
+    max_positions_per_instrument: int = 1   # Max concurrent positions per instrument
+    max_trades_per_day: int = 10            # Max trades per day limit
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "UserRiskConfig":
@@ -59,7 +62,7 @@ class UserRiskConfig:
         cfg.max_risk_pct = float(data.get("max_risk_pct", data.get("max_position_pct", cfg.max_risk_pct)))
         cfg.max_daily_loss = float(data.get("max_daily_loss", data.get("max_daily_loss_inr", data.get("max_daily_loss_usd", cfg.max_daily_loss))))
         cfg.max_open_exposure = float(data.get("max_open_exposure", cfg.balance * 0.75))
-        cfg.max_concurrent_positions = int(data.get("max_concurrent_positions", data.get("max_trades_per_day", cfg.max_concurrent_positions)))
+        cfg.max_concurrent_positions = int(data.get("max_concurrent_positions", cfg.max_concurrent_positions))
         cfg.leverage = float(data.get("leverage", 1.0))
         cfg.mode = "LIVE" if str(data.get("mode", "")).upper() == "LIVE" or data.get("live") is True else "PAPER"
         cfg.cash_buffer_pct = float(data.get("cash_buffer_pct", cfg.cash_buffer_pct))
@@ -67,6 +70,9 @@ class UserRiskConfig:
         cfg.min_planned_rr = float(data.get("min_planned_rr", 3.0))
         cfg.auto_execute_paper = bool(data.get("auto_execute_paper", False))
         cfg.new_entries_paused = bool(data.get("new_entries_paused", False))
+        cfg.reentry_cooldown_sec = int(data.get("reentry_cooldown_sec", cfg.reentry_cooldown_sec))
+        cfg.max_positions_per_instrument = int(data.get("max_positions_per_instrument", cfg.max_positions_per_instrument))
+        cfg.max_trades_per_day = int(data.get("max_trades_per_day", cfg.max_trades_per_day))
         return cfg
 
     def to_dict(self) -> Dict[str, Any]:
@@ -88,6 +94,9 @@ class UserRiskConfig:
             "emergency_stop": self.emergency_stop,
             "cash_buffer_pct": self.cash_buffer_pct,
             "min_planned_rr": self.min_planned_rr,
+            "reentry_cooldown_sec": self.reentry_cooldown_sec,
+            "max_positions_per_instrument": self.max_positions_per_instrument,
+            "max_trades_per_day": self.max_trades_per_day,
         }
 
 
@@ -108,6 +117,13 @@ class OrderTicket:
     cost_breakdown: Optional[Any] = None
     binding_constraint: str = "risk_budget"
     created_at: Optional[str] = None
+    tradingview_symbol: Optional[str] = None
+    canonical_id: Optional[str] = None
+    instrument_type: str = "spot"
+    data_provider: str = ""
+    timeframe: str = "15m"
+    candle_timestamp: Optional[int] = None
+    strategy_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -125,6 +141,13 @@ class OrderTicket:
             "currency": self.currency,
             "cost_breakdown": self.cost_breakdown,
             "binding_constraint": self.binding_constraint,
+            "tradingview_symbol": self.tradingview_symbol,
+            "canonical_id": self.canonical_id,
+            "instrument_type": self.instrument_type,
+            "data_provider": self.data_provider,
+            "timeframe": self.timeframe,
+            "candle_timestamp": self.candle_timestamp,
+            "strategy_id": self.strategy_id,
         }
 
     @classmethod
@@ -144,6 +167,14 @@ class OrderTicket:
             currency=data.get("currency", "INR"),
             cost_breakdown=data.get("cost_breakdown"),
             binding_constraint=data.get("binding_constraint", "risk_budget"),
+            created_at=data.get("created_at"),
+            tradingview_symbol=data.get("tradingview_symbol"),
+            canonical_id=data.get("canonical_id"),
+            instrument_type=data.get("instrument_type", "spot"),
+            data_provider=data.get("data_provider", ""),
+            timeframe=data.get("timeframe", "15m"),
+            candle_timestamp=data.get("candle_timestamp"),
+            strategy_id=data.get("strategy_id", data.get("strategy")),
         )
 
 

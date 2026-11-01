@@ -100,13 +100,22 @@ const el = {
   statAvgR: document.getElementById('statAvgR'),
   statNetPnL: document.getElementById('statNetPnL'),
   healthStatusBadge: document.getElementById('healthStatusBadge'),
+  healthTypeBadge: document.getElementById('healthTypeBadge'),
   healthInstrumentVal: document.getElementById('healthInstrumentVal'),
   healthIntervalVal: document.getElementById('healthIntervalVal'),
   healthProviderVal: document.getElementById('healthProviderVal'),
   healthUpdateVal: document.getElementById('healthUpdateVal'),
   healthAgeVal: document.getElementById('healthAgeVal'),
+  healthCandleAgeVal: document.getElementById('healthCandleAgeVal'),
   healthCandlesVal: document.getElementById('healthCandlesVal'),
   healthTvSyncBadge: document.getElementById('healthTvSyncBadge'),
+  diagLastEval: document.getElementById('diagLastEval'),
+  diagSignalsEvaluated: document.getElementById('diagSignalsEvaluated'),
+  diagSignalDecisions: document.getElementById('diagSignalDecisions'),
+  diagRiskApproved: document.getElementById('diagRiskApproved'),
+  diagExecutedOrders: document.getElementById('diagExecutedOrders'),
+  diagRejectedOrders: document.getElementById('diagRejectedOrders'),
+  diagRecentRejection: document.getElementById('diagRecentRejection'),
 };
 
 // Initialization
@@ -304,6 +313,39 @@ function renderStatus(data) {
       btnHeaderPause.style.background = '#d97706';
     }
   }
+
+  const diag = data.signal_diagnostics || data.diagnostics || {};
+  renderDiagnostics(diag);
+}
+
+function renderDiagnostics(diag) {
+  if (!diag) return;
+  if (el.diagLastEval) {
+    if (diag.last_evaluation_time) {
+      const dt = new Date(diag.last_evaluation_time);
+      el.diagLastEval.textContent = isNaN(dt.getTime()) ? diag.last_evaluation_time : dt.toLocaleTimeString();
+    } else {
+      el.diagLastEval.textContent = 'Idle';
+    }
+  }
+  if (el.diagSignalsEvaluated) {
+    el.diagSignalsEvaluated.textContent = diag.signals_evaluated || 0;
+  }
+  if (el.diagSignalDecisions) {
+    el.diagSignalDecisions.textContent = `${diag.buy_signals || 0} / ${diag.sell_signals || 0} / ${diag.no_trade_decisions || 0}`;
+  }
+  if (el.diagRiskApproved) {
+    el.diagRiskApproved.textContent = diag.risk_approved_signals || 0;
+  }
+  if (el.diagExecutedOrders) {
+    el.diagExecutedOrders.textContent = diag.executed_paper_orders || 0;
+  }
+  if (el.diagRejectedOrders) {
+    el.diagRejectedOrders.textContent = diag.rejected_orders || 0;
+  }
+  if (el.diagRecentRejection) {
+    el.diagRecentRejection.textContent = diag.most_recent_rejection_reason || 'None';
+  }
 }
 
 async function syncTradingViewContext() {
@@ -321,7 +363,7 @@ async function syncTradingViewContext() {
       }
 
       // Check if active TV chart differs from dashboard current selection
-      const targetSymbol = ctx.symbol;
+      const targetSymbol = ctx.raw_symbol || ctx.symbol;
       const targetInterval = ctx.interval || state.currentInterval;
       const targetMarket = ctx.market || state.currentMarket;
 
@@ -337,10 +379,30 @@ async function syncTradingViewContext() {
       }
     } else {
       if (el.healthTvSyncBadge) {
-        if (data.status === 'UNSUPPORTED_INSTRUMENT') {
+        if (data.status === 'NO_VERIFIED_FEED' || ctx.status === 'NO_VERIFIED_FEED') {
+          el.healthTvSyncBadge.textContent = 'NO VERIFIED FEED';
+          el.healthTvSyncBadge.className = 'health-badge status-nofeed';
+          el.healthTvSyncBadge.title = ctx.reason || 'No verified live feed available for instrument';
+          state.activeBars = [];
+          state.chartErrorMessage = `NO VERIFIED FEED: ${ctx.raw_symbol || ctx.symbol}\n${ctx.reason || 'No verified live feed available.'}\nAutomatic paper trading blocked.`;
+          if (el.chartSymbol) el.chartSymbol.textContent = ctx.raw_symbol || ctx.symbol;
+          if (el.chartDataBadge) {
+            el.chartDataBadge.textContent = 'NO VERIFIED FEED';
+            el.chartDataBadge.className = 'chart-badge error';
+          }
+          drawChart();
+        } else if (data.status === 'UNSUPPORTED_INSTRUMENT' || ctx.status === 'UNSUPPORTED_INSTRUMENT') {
           el.healthTvSyncBadge.textContent = 'UNSUPPORTED INSTRUMENT';
           el.healthTvSyncBadge.className = 'health-badge status-unsupported';
           el.healthTvSyncBadge.title = ctx.reason || 'Instrument not supported';
+          state.activeBars = [];
+          state.chartErrorMessage = `UNSUPPORTED INSTRUMENT: ${ctx.raw_symbol || ctx.symbol}\n${ctx.reason || 'Instrument not supported'}\nAutomatic paper trading blocked.`;
+          if (el.chartSymbol) el.chartSymbol.textContent = ctx.raw_symbol || ctx.symbol;
+          if (el.chartDataBadge) {
+            el.chartDataBadge.textContent = 'UNSUPPORTED';
+            el.chartDataBadge.className = 'chart-badge error';
+          }
+          drawChart();
         } else if (data.status === 'UNVERIFIED') {
           el.healthTvSyncBadge.textContent = 'TV UNVERIFIED';
           el.healthTvSyncBadge.className = 'health-badge status-stale';
@@ -359,21 +421,28 @@ async function syncTradingViewContext() {
 
 function updateDataHealth(data) {
   const health = data.data_health || {};
-  const status = health.status || 'LIVE';
+  const status = health.feed_status || health.status || 'LIVE';
   state.lastHealthUpdateTs = health.last_updated_ts || Math.floor(Date.now() / 1000);
 
   if (el.healthStatusBadge) {
     el.healthStatusBadge.textContent = status;
     el.healthStatusBadge.className = 'health-badge';
-    if (status === 'LIVE' || status.startsWith('LIVE')) {
+    if (status === 'LIVE') {
       el.healthStatusBadge.classList.add('status-live');
-    } else if (status === 'STALE DATA') {
+    } else if (status.startsWith('STALE DATA')) {
       el.healthStatusBadge.classList.add('status-stale');
+    } else if (status.includes('FALLBACK')) {
+      el.healthStatusBadge.classList.add('status-fallback');
     } else if (status === 'DATA DISCONNECTED') {
       el.healthStatusBadge.classList.add('status-disconnected');
     } else {
       el.healthStatusBadge.classList.add('status-unsupported');
     }
+  }
+
+  if (el.healthTypeBadge) {
+    const rawType = health.instrument_type || data.instrument_type || (data.market === 'CRYPTO' ? 'SPOT' : data.market || 'EQUITY');
+    el.healthTypeBadge.textContent = String(rawType).replace('_', ' ').toUpperCase();
   }
 
   if (el.healthInstrumentVal) {
@@ -395,7 +464,11 @@ function updateDataHealth(data) {
   }
   if (el.healthAgeVal) {
     const age = typeof health.data_age_sec === 'number' ? health.data_age_sec : 0;
-    el.healthAgeVal.textContent = `${age}s ago`;
+    el.healthAgeVal.textContent = `${age}s (feed)`;
+  }
+  if (el.healthCandleAgeVal) {
+    const cAge = typeof health.candle_age_sec === 'number' ? health.candle_age_sec : 0;
+    el.healthCandleAgeVal.textContent = `${cAge}s (bar)`;
   }
   if (el.healthCandlesVal) {
     const count = (data.bars && data.bars.length) || health.candle_count || 0;
@@ -416,7 +489,7 @@ async function fetchChartData(isBackground = false) {
   if (el.selectInterval) {
     el.selectInterval.value = interval;
   }
-  
+
   try {
     const res = await fetch(`/api/chart?symbol=${encodeURIComponent(state.currentSymbol)}&market=${state.currentMarket}&interval=${interval}&count=80`);
     if (!res.ok) {
@@ -424,7 +497,7 @@ async function fetchChartData(isBackground = false) {
       try {
         const errJson = await res.json();
         errMsg = errJson.error || errMsg;
-      } catch (e) {}
+      } catch (e) { }
       throw new Error(errMsg);
     }
     const data = await res.json();
@@ -631,7 +704,7 @@ async function fetchPositions() {
   }
 }
 
-window.closePosition = async function(symbol) {
+window.closePosition = async function (symbol) {
   try {
     const res = await fetch('/api/close_position', {
       method: 'POST',
@@ -873,10 +946,15 @@ function drawChart() {
   ctx.fillRect(0, 0, width, height);
 
   if (!state.activeBars || state.activeBars.length === 0) {
-    ctx.fillStyle = state.chartErrorMessage ? '#f85149' : '#8b9bb4';
+    ctx.fillStyle = state.chartErrorMessage ? '#f87171' : '#8b9bb4';
     ctx.font = '13px SF Mono, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(state.chartErrorMessage || 'Select an instrument or click Refresh to load real market candles.', width / 2, height / 2);
+    const msg = state.chartErrorMessage || 'Select an instrument or click Refresh to load real market candles.';
+    const lines = msg.split('\n');
+    const startY = (height / 2) - ((lines.length - 1) * 11);
+    lines.forEach((line, idx) => {
+      ctx.fillText(line, width / 2, startY + (idx * 22));
+    });
     return;
   }
 

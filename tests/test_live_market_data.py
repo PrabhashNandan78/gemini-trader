@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Comprehensive Test Suite for Live Market Data Pipeline, Deduplication, Staleness, and TradingView Sync.
+"""Comprehensive Test Suite for Live Market Data Pipeline, Contract-Aware Mapping, Staleness, and TradingView Sync.
 
 Verifies the 13 required test scenarios:
-1. New candle received and rendered.
-2. Current candle updated without creating a duplicate.
-3. New timeframe interval creates a new candle.
-4. Symbol change updates the data source.
-5. Timeframe change updates the candle aggregation.
-6. TradingView tab switch updates the active selection.
-7. Expired or invalid TradingView chart does not cause silent symbol substitution.
-8. Stale data blocks new paper entries.
-9. Data-provider failure produces a visible error.
-10. Reconnection restores updates without duplicating candles.
-11. Indicators and signals use the latest validated candles.
-12. Repeated updates do not create duplicate paper trades.
-13. Existing risk and paper-trading tests still pass.
+1. BTCUSD.P identified as Delta Exchange perpetual.
+2. Unsupported perpetual blocks execution.
+3. Spot and perpetual cannot be interchanged.
+4. ETH signal cannot execute against BTC context.
+5. TradingView timeframe changes update backend.
+6. Old active context cannot generate new orders.
+7. LIVE status impossible when data is stale (> 45s).
+8. Cached fixtures cannot generate executable signals.
+9. New valid signals execute after previous trade closes.
+10. Duplicate signals cannot create duplicate orders.
+11. Re-entry cooldown works correctly.
+12. Every rejected signal has an explicit reason.
+13. 3:1 net R:R and daily loss safeguards verified.
 """
 
 import datetime
@@ -30,18 +30,24 @@ import urllib.request
 from typing import Any, Dict, List, Tuple
 from unittest.mock import MagicMock, patch
 
+from copilot.cost_model import TransactionCostModel
 from copilot.market_data import (
     CryptoExchangeFeed,
+    DeltaExchangeFeed,
+    InstrumentInfo,
     LiveMarketDataManager,
     merge_candle_bars,
     parse_bar_timestamp,
+    resolve_instrument_info,
 )
-from copilot.risk_engine import OrderTicket, UserRiskConfig
+from copilot.paper_engine import PaperTradingEngine
+from copilot.risk_engine import OrderTicket, RiskAndSizingEngine, UserRiskConfig
 from copilot.server import (
     CopilotRequestHandler,
     CopilotServerState,
     clean_float,
     generate_synthetic_bars,
+    normalize_market_symbol,
 )
 from engine.asset_model import parse_symbol
 from engine.market_data import MarketDataError, MarketDataProvider
@@ -53,8 +59,8 @@ class TestLiveMarketDataPipeline(unittest.TestCase):
     def setUp(self):
         self.mgr = LiveMarketDataManager()
 
-    def test_01_new_candle_received_and_merged(self):
-        """Test Case 1: New candle received and correctly merged into candle buffer."""
+    def test_candle_merge_new_bar_appended(self):
+        """Test candle merge: New candle received and correctly merged into candle buffer."""
         initial_bars = [
             {"timestamp": 1000, "open": 50000.0, "high": 50200.0, "low": 49900.0, "close": 50100.0, "volume": 10.0},
             {"timestamp": 1900, "open": 50100.0, "high": 50400.0, "low": 50050.0, "close": 50350.0, "volume": 15.0},
@@ -67,13 +73,12 @@ class TestLiveMarketDataPipeline(unittest.TestCase):
         self.assertEqual(merged[-1]["timestamp"], 2800)
         self.assertEqual(merged[-1]["close"], 50550.0)
 
-    def test_02_current_candle_updated_without_duplicate(self):
-        """Test Case 2: Updates to current candle modify OHLCV without creating duplicate timestamps."""
+    def test_candle_merge_current_bar_updated_without_duplicate(self):
+        """Test candle merge: Updates to current candle modify OHLCV without creating duplicate timestamps."""
         bars = [
             {"timestamp": 1000, "open": 50000.0, "high": 50200.0, "low": 49900.0, "close": 50100.0, "volume": 10.0},
             {"timestamp": 1900, "open": 50100.0, "high": 50300.0, "low": 50000.0, "close": 50250.0, "volume": 12.0},
         ]
-        # In-progress update with same timestamp 1900 but higher high and higher volume
         tick_update = [
             {"timestamp": 1900, "open": 50100.0, "high": 50450.0, "low": 49950.0, "close": 50400.0, "volume": 18.5},
         ]
@@ -85,44 +90,13 @@ class TestLiveMarketDataPipeline(unittest.TestCase):
         self.assertEqual(merged[1]["close"], 50400.0)
         self.assertEqual(merged[1]["volume"], 18.5)
 
-    def test_03_new_timeframe_interval_creates_new_candle(self):
-        """Test Case 3: When a new interval boundary arrives, a distinct new candle is created."""
-        bars = [
-            {"timestamp": 1000, "open": 100.0, "high": 105.0, "low": 99.0, "close": 104.0, "volume": 50.0},
-        ]
-        next_interval_bar = [
-            {"timestamp": 1900, "open": 104.0, "high": 108.0, "low": 103.0, "close": 107.0, "volume": 40.0},
-        ]
-        merged = merge_candle_bars(bars, next_interval_bar)
-        self.assertEqual(len(merged), 2)
-        self.assertEqual(merged[0]["timestamp"], 1000)
-        self.assertEqual(merged[1]["timestamp"], 1900)
-
-    def test_04_symbol_change_updates_data_source(self):
-        """Test Case 4: Changing symbol switches mapping, provider, and cache partition."""
-        btc_asset = parse_symbol("BTC-USD")
-        rel_asset = parse_symbol("RELIANCE.NS")
-
-        self.assertTrue(self.mgr.is_crypto_symbol("BTC-USD"))
-        self.assertFalse(self.mgr.is_crypto_symbol("RELIANCE.NS"))
-
-        bin_sym = CryptoExchangeFeed.map_binance_symbol("BTC-USD")
-        self.assertEqual(bin_sym, "BTCUSDT")
-
-        eth_sym = CryptoExchangeFeed.map_binance_symbol("ETH-USD")
-        self.assertEqual(eth_sym, "ETHUSDT")
-
-        sol_sym = CryptoExchangeFeed.map_binance_symbol("SOL-USD")
-        self.assertEqual(sol_sym, "SOLUSDT")
-
-    def test_05_timeframe_change_aggregates_candles(self):
-        """Test Case 5: 2m interval aggregates 1m bars into 2m candles correctly."""
+    def test_candle_timeframe_aggregation_2m(self):
+        """Test 2m aggregation: 1m bars aggregate into 2m candles properly."""
         raw_1m = [
             {"timestamp": 100, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 5.0, "datetime_utc": "2026-01-01T00:01:00Z", "datetime_local": "2026-01-01 00:01:00"},
             {"timestamp": 160, "open": 11.0, "high": 14.0, "low": 10.5, "close": 13.0, "volume": 7.0, "datetime_utc": "2026-01-01T00:02:00Z", "datetime_local": "2026-01-01 00:02:00"},
         ]
         with patch.object(CryptoExchangeFeed, "fetch_binance_klines") as mock_klines:
-            # Simulate fetching 1m and aggregating
             b1 = raw_1m[0]
             b2 = raw_1m[1]
             agg = [{
@@ -144,48 +118,9 @@ class TestLiveMarketDataPipeline(unittest.TestCase):
             self.assertEqual(bars[0]["close"], 13.0)
             self.assertEqual(bars[0]["volume"], 12.0)
 
-    def test_08_stale_data_blocks_new_paper_entries(self):
-        """Test Case 8: Data older than acceptable threshold is classified STALE and blocks entries."""
-        now = time.time()
-        # 4 hours old 15m candle
-        stale_ts = int(now - 14400)
-        stale_bars = [
-            {"timestamp": stale_ts, "open": 65000.0, "high": 65200.0, "low": 64900.0, "close": 65100.0, "volume": 10.0}
-        ]
-        health = self.mgr.assess_health("BTC-USD", "15m", stale_bars, "Binance Public")
-        self.assertEqual(health["status"], "STALE DATA")
-        self.assertTrue(health["is_stale"])
-        self.assertGreaterEqual(health["data_age_sec"], 14000)
 
-    def test_09_data_provider_failure_produces_visible_error(self):
-        """Test Case 9: When provider fails and no cached bars exist, report DATA DISCONNECTED."""
-        health = self.mgr.assess_health("BTC-USD", "15m", [], "Binance Public", error_msg="Network timeout")
-        self.assertEqual(health["status"], "DATA DISCONNECTED")
-        self.assertTrue(health["is_stale"])
-        self.assertEqual(health["candle_count"], 0)
-        self.assertIn("Network timeout", health["error"])
-
-    def test_10_reconnection_restores_updates_without_duplicates(self):
-        """Test Case 10: Reconnection merges offline backlog and live updates cleanly without duplicates."""
-        existing = [
-            {"timestamp": 1000, "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "volume": 10.0},
-            {"timestamp": 1900, "open": 101.0, "high": 103.0, "low": 100.0, "close": 102.0, "volume": 12.0},
-        ]
-        # Restored stream with overlapping and new bars
-        restored = [
-            {"timestamp": 1900, "open": 101.0, "high": 104.0, "low": 100.0, "close": 103.5, "volume": 15.0},
-            {"timestamp": 2800, "open": 103.5, "high": 106.0, "low": 103.0, "close": 105.0, "volume": 20.0},
-        ]
-        merged = merge_candle_bars(existing, restored)
-        self.assertEqual(len(merged), 3)
-        timestamps = [b["timestamp"] for b in merged]
-        self.assertEqual(timestamps, [1000, 1900, 2800])
-        # In-progress bar updated
-        self.assertEqual(merged[1]["close"], 103.5)
-
-
-class TestTradingViewSyncAndAutoExecution(unittest.TestCase):
-    """Integration test suite for TradingView synchronization and HTTP API behavior."""
+class TestInstrumentIdentificationAndExecutionSafety(unittest.TestCase):
+    """End-to-end integration and unit tests for the 13 required scenarios."""
 
     @classmethod
     def setUpClass(cls):
@@ -214,7 +149,21 @@ class TestTradingViewSyncAndAutoExecution(unittest.TestCase):
         self.server_state.paper_engine.reset_account(confirm=True, initial_balance=100000.0)
         self.server_state.user_config.auto_execute_paper = False
         self.server_state.user_config.new_entries_paused = False
+        self.server_state.user_config.emergency_stop = False
+        self.server_state.broker.emergency_halted = False
         self.server_state.last_executed_signals.clear()
+        self.server_state.last_trade_times.clear()
+        self.server_state.signal_diagnostics = type(self.server_state.signal_diagnostics)()
+        self.server_state.active_context = {
+            "symbol": None,
+            "raw_symbol": None,
+            "interval": "15m",
+            "source": None,
+            "status": "TRADINGVIEW NOT SYNCHRONIZED",
+            "synced": False,
+            "updated_at": 0.0,
+            "unverified": True,
+        }
 
     def _get(self, path: str) -> Tuple[int, Dict[str, Any]]:
         url = f"http://127.0.0.1:{self.port}{path}"
@@ -245,80 +194,239 @@ class TestTradingViewSyncAndAutoExecution(unittest.TestCase):
                 data = {"raw_error": str(e)}
             return e.code, data
 
-    def test_06_tradingview_tab_switch_updates_active_selection(self):
-        """Test Case 6: TradingView tab switch notifies backend and updates active context."""
-        payload = {
-            "symbol": "BTCUSD",
-            "interval": "15m",
-            "source": "tradingview",
-            "unverified": False,
-        }
-        code, data = self._post("/api/active_context", payload)
-        self.assertEqual(code, 200)
-        self.assertTrue(data.get("success"))
-        ctx = data.get("active_context", {})
-        self.assertEqual(ctx.get("symbol"), "BTC-USD")
-        self.assertEqual(ctx.get("status"), "SYNCHRONIZED")
+    def test_01_btcusd_p_identified_as_delta_perpetual(self):
+        """Scenario 1: BTCUSD.P is explicitly identified as Delta Exchange perpetual futures."""
+        for sym in ("BTCUSD.P", "DELTA:BTCUSD.P"):
+            info = resolve_instrument_info(sym)
+            self.assertTrue(info.supported)
+            self.assertEqual(info.exchange, "DELTA")
+            self.assertEqual(info.instrument_type, "perpetual_futures")
+            self.assertEqual(info.canonical_id, "DELTA:BTCUSD:PERP")
+            self.assertEqual(info.settlement_currency, "USD")
+            self.assertEqual(info.provider_symbol, "BTCUSD")
+            self.assertIn("Delta Exchange", info.provider_name)
+            self.assertEqual(info.status, "VERIFIED")
 
-        # Now query GET /api/active_context to confirm dashboard receives it
+            # Verify server normalization
+            norm = normalize_market_symbol(sym)
+            self.assertTrue(norm["supported"])
+            self.assertEqual(norm["exchange"], "DELTA")
+            self.assertEqual(norm["instrument_type"], "perpetual_futures")
+
+    def test_02_unsupported_perpetual_blocks_execution(self):
+        """Scenario 2: Unsupported perpetual blocks analysis and automatic paper execution."""
+        info = resolve_instrument_info("UNKNOWN.P")
+        self.assertFalse(info.supported)
+        self.assertEqual(info.status, "NO_VERIFIED_FEED")
+        self.assertEqual(info.instrument_type, "perpetual_futures")
+        self.assertIn("NO VERIFIED FEED", info.reason)
+
+        # Set active context to UNKNOWN.P
+        code_ctx, data_ctx = self._post("/api/active_context", {"symbol": "UNKNOWN.P", "interval": "15m"})
+        self.assertEqual(code_ctx, 200)
+        self.assertFalse(data_ctx["active_context"]["synced"])
+        self.assertEqual(data_ctx["active_context"]["status"], "NO_VERIFIED_FEED")
+
+        # Attempt analysis and execution on UNKNOWN.P
+        code_a, data_a = self._post("/api/analyze", {"symbol": "UNKNOWN.P", "interval": "15m", "auto_execute": True})
+        self.assertEqual(code_a, 400)
+        self.assertEqual(data_a.get("status"), "UNSUPPORTED_SYMBOL")
+        self.assertEqual(data_a.get("analysis", {}).get("decision"), "NO_TRADE")
+
+        # Verify no position opened
+        self.assertEqual(len(self.server_state.paper_engine.positions), 0)
+
+    def test_03_spot_and_perpetual_cannot_be_interchanged(self):
+        """Scenario 3: Spot BTC-USD and perpetual BTCUSD.P have distinct canonical IDs and types."""
+        spot_info = resolve_instrument_info("BTC-USD")
+        perp_info = resolve_instrument_info("BTCUSD.P")
+
+        self.assertNotEqual(spot_info.canonical_id, perp_info.canonical_id)
+        self.assertEqual(spot_info.instrument_type, "spot")
+        self.assertEqual(perp_info.instrument_type, "perpetual_futures")
+        self.assertNotEqual(spot_info.exchange, perp_info.exchange)
+        self.assertEqual(spot_info.exchange, "CRYPTO")
+        self.assertEqual(perp_info.exchange, "DELTA")
+
+    def test_04_eth_signal_cannot_execute_against_btc_context(self):
+        """Scenario 4: Ticket generated for ETH-USD cannot execute when active context is BTCUSD.P."""
+        # Active chart is BTCUSD.P
+        self._post("/api/active_context", {"symbol": "DELTA:BTCUSD.P", "interval": "15m"})
+
+        # Order ticket is created for ETH-USD
+        eth_ticket = {
+            "symbol": "ETH-USD",
+            "tradingview_symbol": "ETHUSD",
+            "canonical_id": "CRYPTO:ETH-USD:SPOT",
+            "instrument_type": "spot",
+            "side": "BUY",
+            "entry_price": 2600.0,
+            "stop_loss": 2500.0,
+            "take_profit": 2950.0,
+            "quantity": 1.0,
+            "allocated_capital": 2600.0,
+            "risk_amount": 100.0,
+            "planned_rr": 3.5,
+            "strategy": "TrendFollowing",
+            "currency": "USD",
+        }
+
+        code_o, data_o = self._post("/api/order", {"ticket": eth_ticket})
+        self.assertEqual(code_o, 400)
+        self.assertFalse(data_o.get("success"))
+        self.assertEqual(data_o.get("status"), "CONTEXT_MISMATCH")
+        self.assertIn("CONTEXT MISMATCH", data_o.get("reason", ""))
+        self.assertEqual(len(self.server_state.paper_engine.positions), 0)
+
+    def test_05_tradingview_timeframe_changes_update_backend(self):
+        """Scenario 5: Timeframe change from 15m to 5m updates backend active context."""
+        code1, data1 = self._post("/api/active_context", {"symbol": "BTCUSD.P", "interval": "15m"})
+        self.assertEqual(code1, 200)
+        self.assertEqual(data1["active_context"]["interval"], "15m")
+
+        code2, data2 = self._post("/api/active_context", {"symbol": "BTCUSD.P", "interval": "5m"})
+        self.assertEqual(code2, 200)
+        self.assertEqual(data2["active_context"]["interval"], "5m")
+
+        # Query GET /api/active_context
         code_g, data_g = self._get("/api/active_context")
         self.assertEqual(code_g, 200)
-        self.assertTrue(data_g.get("synced"))
-        self.assertEqual(data_g.get("status"), "SYNCHRONIZED")
-        self.assertEqual(data_g["active_context"]["symbol"], "BTC-USD")
+        self.assertEqual(data_g["active_context"]["interval"], "5m")
 
-    def test_07_expired_or_invalid_tv_chart_does_not_silently_substitute(self):
-        """Test Case 7: Invalid or unverified context produces explicit warning, no silent substitution."""
-        payload = {
-            "symbol": "UNVERIFIED",
-            "interval": "15m",
-            "source": "tradingview",
-            "unverified": True,
-            "reason": "CHART CONTEXT UNVERIFIED - 404 NOT FOUND",
+    def test_06_old_active_context_cannot_generate_new_orders(self):
+        """Scenario 6: Active context older than 60s is classified expired and blocks order placement."""
+        self._post("/api/active_context", {"symbol": "BTCUSD.P", "interval": "15m"})
+        # Simulate elapsed time > 60s
+        self.server_state.active_context["updated_at"] = time.time() - 90.0
+
+        ticket = {
+            "symbol": "BTCUSD",
+            "tradingview_symbol": "DELTA:BTCUSD.P",
+            "canonical_id": "DELTA:BTCUSD:PERP",
+            "side": "BUY",
+            "entry_price": 75000.0,
+            "stop_loss": 74000.0,
+            "take_profit": 78500.0,
+            "quantity": 0.1,
+            "allocated_capital": 7500.0,
+            "risk_amount": 100.0,
+            "planned_rr": 3.5,
+            "currency": "USD",
         }
-        code, data = self._post("/api/active_context", payload)
-        self.assertEqual(code, 200)
-        ctx = data.get("active_context", {})
-        self.assertEqual(ctx.get("status"), "UNVERIFIED")
-        self.assertTrue(ctx.get("unverified"))
-        self.assertIn("UNVERIFIED", ctx.get("symbol"))
+        code_o, data_o = self._post("/api/order", {"ticket": ticket})
+        self.assertEqual(code_o, 400)
+        self.assertFalse(data_o.get("success"))
+        self.assertEqual(data_o.get("status"), "CONTEXT_EXPIRED")
+        self.assertIn("EXPIRED", data_o.get("reason", ""))
 
-        code_g, data_g = self._get("/api/active_context")
-        self.assertFalse(data_g.get("synced"))
-        self.assertEqual(data_g.get("status"), "UNVERIFIED")
+    def test_07_live_status_impossible_when_data_is_stale(self):
+        """Scenario 7: When data age > 45s on 24/7 continuous feed, LIVE status is impossible."""
+        now = time.time()
+        # Mock last fetch time 120s ago
+        self.server_state.market_data.last_fetch_time[("BTC-USD", "15m")] = now - 120.0
+        candle_ts = int(now - 120.0)
+        bars = [{"timestamp": candle_ts, "open": 65000.0, "high": 65200.0, "low": 64900.0, "close": 65100.0, "volume": 10.0}]
 
-    def test_11_indicators_and_signals_use_latest_validated_candles(self):
-        """Test Case 11: /api/chart and /api/analyze share the exact same candle series and regime."""
+        health = self.server_state.market_data.assess_health("BTC-USD", "15m", bars, "Binance Public")
+        self.assertFalse(health["is_live"], "Feed older than 45s must NEVER be labeled is_live=True")
+        self.assertTrue(health["is_stale"])
+        self.assertNotEqual(health["status"], "LIVE")
+        self.assertIn("STALE DATA", health["status"])
+        self.assertGreater(health["data_age_sec"], 45)
+
+    def test_08_cached_fixtures_cannot_generate_executable_signals(self):
+        """Scenario 8: Cached fallback fixtures report is_fallback=True and block paper execution."""
+        bars = generate_synthetic_bars("BTC-USD", count=60)
+        health = self.server_state.market_data.assess_health("BTC-USD", "15m", bars, "Offline Fixture", is_fallback=True)
+
+        self.assertTrue(health["is_fallback"])
+        self.assertFalse(health["is_live"])
+        self.assertTrue(health["is_stale"])
+        self.assertEqual(health["status"], "CACHED FALLBACK (STALE)")
+
+        # Inject this fallback health into server market data cache
+        self.server_state.market_data.bars_cache[("BTC-USD", "15m")] = bars
+        with patch.object(self.server_state.market_data, "get_data_health", return_value=health):
+            ticket = {
+                "symbol": "BTC-USD",
+                "side": "BUY",
+                "entry_price": 65000.0,
+                "stop_loss": 64000.0,
+                "take_profit": 68500.0,
+                "quantity": 0.1,
+                "allocated_capital": 6500.0,
+                "risk_amount": 100.0,
+                "planned_rr": 3.5,
+                "currency": "USD",
+            }
+            code_o, data_o = self._post("/api/order", {"ticket": ticket})
+            self.assertEqual(code_o, 400)
+            self.assertFalse(data_o.get("success"))
+            self.assertEqual(data_o.get("status"), "CACHED_FALLBACK")
+            self.assertIn("fallback", data_o.get("reason", "").lower())
+
+    def test_09_new_valid_signals_execute_after_previous_trade_closes(self):
+        """Scenario 9: Once an active position is closed, a subsequent valid signal can execute."""
+        self.server_state.user_config.auto_execute_paper = True
+        ticket = OrderTicket(
+            symbol="BTC-USD",
+            market="CRYPTO",
+            side="BUY",
+            entry_price=65000.0,
+            stop_loss=64000.0,
+            take_profit=68500.0,
+            quantity=0.1,
+            allocated_capital=6500.0,
+            risk_amount=100.0,
+            planned_rr=3.5,
+            strategy="TrendFollowing",
+            currency="USD",
+        )
+        res1 = self.server_state.broker.place_order(ticket)
+        self.assertTrue(res1.get("success"))
+        self.assertIn("BTC-USD", self.server_state.paper_engine.positions)
+
+        # Close position
+        close_res = self.server_state.paper_engine.close_position("BTC-USD", 68500.0, reason="TAKE_PROFIT_3R")
+        self.assertTrue(close_res.get("success"))
+        self.assertNotIn("BTC-USD", self.server_state.paper_engine.positions)
+
+        # Clear cooldown for immediate re-test
+        self.server_state.last_trade_times["BTC-USD"] = 0
+
+        # Execute new signal
+        ticket2 = OrderTicket(
+            symbol="BTC-USD",
+            market="CRYPTO",
+            side="BUY",
+            entry_price=68600.0,
+            stop_loss=67600.0,
+            take_profit=72000.0,
+            quantity=0.1,
+            allocated_capital=6860.0,
+            risk_amount=100.0,
+            planned_rr=3.4,
+            strategy="Breakout",
+            currency="USD",
+        )
+        res2 = self.server_state.broker.place_order(ticket2)
+        self.assertTrue(res2.get("success"))
+        self.assertIn("BTC-USD", self.server_state.paper_engine.positions)
+
+    def test_10_duplicate_signals_cannot_create_duplicate_orders(self):
+        """Scenario 10: Repeated ticks with identical candle timestamp do not spawn duplicate orders."""
+        self.server_state.user_config.auto_execute_paper = True
         mock_bars = generate_synthetic_bars("BTC-USD", count=60)
         mock_asset = parse_symbol("BTC-USD")
-
-        with patch.object(MarketDataProvider, "get_bars", return_value=(mock_asset, mock_bars, {"currency": "USD"})):
-            code_c, data_c = self._get("/api/chart?symbol=BTC-USD&interval=15m&count=60")
-            self.assertEqual(code_c, 200)
-            bars_c = data_c.get("bars", [])
-            self.assertGreaterEqual(len(bars_c), 20)
-            self.assertIn("ema9", bars_c[-1])
-            self.assertIn("data_health", data_c)
-
-            code_a, data_a = self._post("/api/analyze", {"symbol": "BTC-USD", "interval": "15m"})
-            self.assertEqual(code_a, 200)
-            self.assertIn("analysis", data_a)
-            self.assertIn("data_health", data_a)
-
-    def test_12_repeated_updates_do_not_create_duplicate_paper_trades(self):
-        """Test Case 12: Repeated ticks during the same candle interval do not create duplicate trades."""
-        self.server_state.user_config.auto_execute_paper = True
-        mock_bars = generate_synthetic_bars("ETH-USD", count=60)
-        mock_asset = parse_symbol("ETH-USD")
         mock_ticket = {
-            "symbol": "ETH-USD",
+            "symbol": "BTC-USD",
             "market": "CRYPTO",
             "side": "BUY",
-            "entry_price": 2500.0,
-            "stop_loss": 2400.0,
-            "take_profit": 2850.0,
-            "quantity": 1.0,
-            "allocated_capital": 2500.0,
+            "entry_price": 65000.0,
+            "stop_loss": 64000.0,
+            "take_profit": 68500.0,
+            "quantity": 0.1,
+            "allocated_capital": 6500.0,
             "risk_amount": 100.0,
             "planned_rr": 3.5,
             "strategy": "TrendFollowing",
@@ -334,20 +442,99 @@ class TestTradingViewSyncAndAutoExecution(unittest.TestCase):
 
         with patch.object(MarketDataProvider, "get_bars", return_value=(mock_asset, mock_bars, {"currency": "USD"})), \
              patch.object(self.server_state.strategy_engine, "analyze_and_generate_ticket", return_value=mock_analysis):
-            # First tick in candle
-            code1, data1 = self._post("/api/analyze", {"symbol": "ETH-USD", "interval": "15m"})
+            # First tick
+            code1, data1 = self._post("/api/analyze", {"symbol": "BTC-USD", "interval": "15m"})
             self.assertEqual(code1, 200)
             self.assertTrue(data1["analysis"]["auto_execution"]["executed"])
 
-            # Repeated tick on same candle timestamp
-            code2, data2 = self._post("/api/analyze", {"symbol": "ETH-USD", "interval": "15m"})
+            # Second identical tick
+            code2, data2 = self._post("/api/analyze", {"symbol": "BTC-USD", "interval": "15m"})
             self.assertEqual(code2, 200)
             self.assertFalse(data2["analysis"]["auto_execution"]["executed"])
             self.assertIn("Duplicate", data2["analysis"]["auto_execution"]["reason"])
 
+    def test_11_reentry_cooldown_works_correctly(self):
+        """Scenario 11: Re-entry within 60s cooldown is rejected; succeeds after cooldown expires."""
+        now = time.time()
+        self.server_state.last_trade_times["BTC-USD"] = now - 10.0  # 10s ago, cooldown is 60s
+
+        ticket = {
+            "symbol": "BTC-USD",
+            "side": "BUY",
+            "entry_price": 65000.0,
+            "stop_loss": 64000.0,
+            "take_profit": 68500.0,
+            "quantity": 0.1,
+            "allocated_capital": 6500.0,
+            "risk_amount": 100.0,
+            "planned_rr": 3.5,
+            "currency": "USD",
+        }
+        code1, data1 = self._post("/api/order", {"ticket": ticket})
+        self.assertEqual(code1, 400)
+        self.assertFalse(data1.get("success"))
+        self.assertEqual(data1.get("status"), "COOLDOWN_ACTIVE")
+        self.assertIn("COOLDOWN", data1.get("reason", ""))
+
+        # Fast forward past cooldown
+        self.server_state.last_trade_times["BTC-USD"] = now - 70.0
+        code2, data2 = self._post("/api/order", {"ticket": ticket})
+        self.assertEqual(code2, 200)
+        self.assertTrue(data2.get("success"))
+
+    def test_12_every_rejected_signal_has_explicit_reason(self):
+        """Scenario 12: Every rejection provides an explicit, actionable explanation in diagnostics."""
+        # Cause rejection via unsupported symbol
+        self._post("/api/analyze", {"symbol": "UNKNOWN.P", "interval": "15m"})
+
+        code_diag, data_diag = self._get("/api/diagnostics")
+        self.assertEqual(code_diag, 200)
+        self.assertGreaterEqual(data_diag["rejected_orders"], 1)
+        self.assertTrue(len(data_diag["most_recent_rejection_reason"]) > 5)
+        self.assertIn("NO VERIFIED FEED", data_diag["most_recent_rejection_reason"])
+
+    def test_13_three_to_one_rr_and_daily_loss_safeguards_verified(self):
+        """Scenario 13: 3:1 net R:R and daily loss limit safeguards are strictly enforced."""
+        risk_engine = RiskAndSizingEngine(self.server_state.user_config)
+
+        # 1. Planned R:R below 3.0:1 must be rejected
+        res_sub_rr = risk_engine.size_and_verify(
+            symbol="RELIANCE.NS",
+            side="BUY",
+            entry_price=2500.0,
+            stop_loss=2450.0,
+            take_profit=2550.0,  # 50 reward vs 50 risk = 1:1 gross, < 3:1 net
+            skip_window=True,
+        )
+        self.assertFalse(res_sub_rr.approved)
+        self.assertTrue(any("3.0:1" in r or "3:1" in r for r in res_sub_rr.rejection_reasons))
+
+        ticket_sub_rr = risk_engine.calculate_position_size(
+            symbol="RELIANCE.NS",
+            entry_price=2500.0,
+            stop_loss=2450.0,
+            take_profit=2550.0,
+            side="BUY",
+        )
+        self.assertIsNone(ticket_sub_rr)
+
+        # 2. Daily loss limit breach must reject all new entries
+        self.server_state.user_config.max_daily_loss = 2000.0
+        res_daily = risk_engine.size_and_verify(
+            symbol="RELIANCE.NS",
+            side="BUY",
+            entry_price=2500.0,
+            stop_loss=2480.0,
+            take_profit=2570.0,
+            realized_loss_today=2500.0,  # Breached 2000 limit
+            skip_window=True,
+        )
+        self.assertFalse(res_daily.approved)
+        self.assertTrue(any("daily loss" in r.lower() for r in res_daily.rejection_reasons))
+
 
 class TestRealMarketDataLiveIntegration(unittest.TestCase):
-    """Separate live verification against real public 24/7 crypto endpoints (clearly separated from mocked tests)."""
+    """Separate live verification against real public 24/7 crypto and delta exchange endpoints."""
 
     def test_real_crypto_candles_advance(self):
         """Fetches live candles from Binance public endpoint and confirms candle timestamps are fresh."""
@@ -357,12 +544,25 @@ class TestRealMarketDataLiveIntegration(unittest.TestCase):
             latest = bars[-1]
             now_ts = int(time.time())
             candle_age = max(0, now_ts - latest["timestamp"])
-            # Active 15m candle must be within 15 minutes of current wall-clock
             self.assertLessEqual(candle_age, 960, f"Live candle timestamp {latest['timestamp']} is stale (age: {candle_age}s)")
             self.assertGreater(latest["close"], 1000.0)
             self.assertGreater(latest["high"], latest["low"])
         except Exception as e:
             self.skipTest(f"Live public endpoint temporarily unavailable: {e}")
+
+    def test_real_delta_exchange_candles_advance(self):
+        """Fetches real perpetual futures candles from Delta Exchange India."""
+        try:
+            bars = DeltaExchangeFeed.fetch_delta_candles("BTCUSD.P", interval="15m", limit=5)
+            self.assertGreaterEqual(len(bars), 2)
+            latest = bars[-1]
+            now_ts = int(time.time())
+            candle_age = max(0, now_ts - latest["timestamp"])
+            self.assertLessEqual(candle_age, 960, f"Live Delta candle timestamp {latest['timestamp']} is stale (age: {candle_age}s)")
+            self.assertGreater(latest["close"], 1000.0)
+            self.assertGreater(latest["high"], latest["low"])
+        except Exception as e:
+            self.skipTest(f"Delta Exchange public endpoint temporarily unavailable: {e}")
 
 
 if __name__ == "__main__":

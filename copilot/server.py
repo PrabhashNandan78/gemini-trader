@@ -36,7 +36,80 @@ from copilot.regime import (
 from copilot.risk_engine import OrderTicket, RiskAndSizingEngine, UserRiskConfig
 from copilot.strategies import AdaptiveStrategyEngine
 from engine.market_data import MarketDataError
-from copilot.market_data import LiveMarketDataManager, MarketDataProvider, merge_candle_bars
+from copilot.market_data import (
+    LiveMarketDataManager,
+    MarketDataProvider,
+    merge_candle_bars,
+    resolve_instrument_info,
+    InstrumentInfo,
+)
+
+
+class SignalDiagnosticsTracker:
+    """Tracks signal evaluations, approvals, rejections, and execution metrics."""
+
+    def __init__(self):
+        self.signals_evaluated: int = 0
+        self.buy_signals: int = 0
+        self.sell_signals: int = 0
+        self.no_trade_decisions: int = 0
+        self.risk_approved_signals: int = 0
+        self.executed_paper_orders: int = 0
+        self.rejected_orders: int = 0
+        self.most_recent_rejection_reason: Optional[str] = None
+        self.last_evaluation_time: Optional[str] = None
+        self.recent_events: List[Dict[str, Any]] = []
+
+    def record_evaluation(self, decision: str, strategy: Optional[str] = None):
+        self.signals_evaluated += 1
+        self.last_evaluation_time = datetime.now(timezone.utc).isoformat()
+        if decision == "BUY":
+            self.buy_signals += 1
+        elif decision == "SELL":
+            self.sell_signals += 1
+        else:
+            self.no_trade_decisions += 1
+
+    def record_risk_approval(self):
+        self.risk_approved_signals += 1
+
+    def record_execution(self, order_id: str, symbol: str, fill_price: float):
+        self.executed_paper_orders += 1
+        self.recent_events.append({
+            "type": "EXECUTION",
+            "time": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "order_id": order_id,
+            "fill_price": fill_price,
+        })
+        if len(self.recent_events) > 50:
+            self.recent_events.pop(0)
+
+    def record_rejection(self, reason: str, symbol: Optional[str] = None):
+        self.rejected_orders += 1
+        self.most_recent_rejection_reason = reason
+        self.recent_events.append({
+            "type": "REJECTION",
+            "time": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "reason": reason,
+        })
+        if len(self.recent_events) > 50:
+            self.recent_events.pop(0)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "signals_evaluated": self.signals_evaluated,
+            "buy_signals": self.buy_signals,
+            "sell_signals": self.sell_signals,
+            "no_trade_decisions": self.no_trade_decisions,
+            "risk_approved_signals": self.risk_approved_signals,
+            "executed_paper_orders": self.executed_paper_orders,
+            "rejected_orders": self.rejected_orders,
+            "most_recent_rejection_reason": self.most_recent_rejection_reason or "None",
+            "last_evaluation_time": self.last_evaluation_time,
+            "recent_events": self.recent_events[-10:],
+        }
 
 
 class CopilotServerState:
@@ -58,6 +131,9 @@ class CopilotServerState:
             mode=mode,
             auto_execute_paper=False,
             new_entries_paused=False,
+            reentry_cooldown_sec=60,
+            max_positions_per_instrument=1,
+            max_trades_per_day=10,
         )
         self.paper_engine = PaperTradingEngine(
             initial_balance=initial_balance,
@@ -73,6 +149,8 @@ class CopilotServerState:
         self.market_data = LiveMarketDataManager()
         self.strategy_engine = AdaptiveStrategyEngine()
         self.last_executed_signals: Dict[Any, Any] = {}
+        self.signal_diagnostics = SignalDiagnosticsTracker()
+        self.last_trade_times: Dict[str, float] = {}
         self.active_context: Dict[str, Any] = {
             "symbol": None,
             "raw_symbol": None,
@@ -177,279 +255,9 @@ def sanitize_for_json(obj: Any) -> Any:
 
 
 def normalize_market_symbol(raw_symbol: str, market: Optional[str] = None) -> Dict[str, Any]:
-    """Normalizes raw ticker symbols from TradingView or user inputs to verified provider symbols."""
-    raw = (raw_symbol or "").strip().strip(",;'\"")
-    if not raw or raw.upper() in ("UNVERIFIED", "PAGE NOT FOUND", "404", "NONE"):
-        return {
-            "supported": False,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": None,
-            "market": "UNKNOWN",
-            "asset_class": "unknown",
-            "display_name": raw_symbol or "UNVERIFIED",
-            "source_label": "Unverified Context",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-            "reason": "CHART CONTEXT UNVERIFIED - TradingView chart page not found or layout expired.",
-        }
-
-    clean = raw.upper().replace("NSE-", "NSE:").replace("BSE-", "BSE:")
-
-    # 1. TradingView Index Futures & Spot Proxies
-    # NIFTY 50 Futures / Continuous
-    nifty_cand = clean[4:].strip() if clean.startswith("NSE:") else clean
-    if nifty_cand in ("NIFTY1!", "NIFTY", "^NSEI", "NIFTY50", "NIFTY 50", "NIFTY_50", "NIFTY 50 INDEX", "NIFTY 50 FUTURES", "NIFTY50 INDEX", "NIFTY50 FUTURES"):
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": "^NSEI",
-            "market": "NSE",
-            "asset_class": "index_futures",
-            "display_name": "NIFTY 50 (Continuous Futures Proxy)",
-            "source_label": "Delayed (15m NSE Feed - Nifty 50 Index Proxy)",
-            "exchange": "NSE",
-            "is_proxy": True,
-            "proxy_target": "^NSEI",
-            "proxy_notice": "Proxy: ^NSEI (NIFTY 50 Spot Index Proxy) - Public feed tracks underlying cash index, not live futures basis/expiry.",
-        }
-
-    # BANKNIFTY Futures / Continuous
-    if nifty_cand in ("BANKNIFTY1!", "BANKNIFTY", "^NSEBANK", "BANKNIFTY50", "BANK NIFTY", "BANK_NIFTY", "BANK NIFTY INDEX", "BANK NIFTY FUTURES"):
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": "^NSEBANK",
-            "market": "NSE",
-            "asset_class": "index_futures",
-            "display_name": "BANK NIFTY (Continuous Futures Proxy)",
-            "source_label": "Delayed (15m NSE Feed - Bank Nifty Index Proxy)",
-            "exchange": "NSE",
-            "is_proxy": True,
-            "proxy_target": "^NSEBANK",
-            "proxy_notice": "Proxy: ^NSEBANK (BANK NIFTY Spot Index Proxy) - Public feed tracks underlying cash index, not live futures basis/expiry.",
-        }
-
-    # 2. Indian Equities (NSE / BSE)
-    if clean.startswith("NSE:"):
-        ticker = clean[4:].strip()
-        mapped = f"{ticker}.NS"
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": mapped,
-            "market": "NSE",
-            "asset_class": "equity_in",
-            "display_name": ticker,
-            "source_label": "Delayed (15m NSE Feed)",
-            "exchange": "NSE",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-    if clean.startswith("BSE:"):
-        ticker = clean[4:].strip()
-        mapped = f"{ticker}.BO"
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": mapped,
-            "market": "BSE",
-            "asset_class": "equity_in",
-            "display_name": ticker,
-            "source_label": "Delayed (15m BSE Feed)",
-            "exchange": "BSE",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-    if clean.endswith(".NS") or clean.endswith(".BO"):
-        exch = "NSE" if clean.endswith(".NS") else "BSE"
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": clean,
-            "market": exch,
-            "asset_class": "equity_in",
-            "display_name": clean.split(".")[0],
-            "source_label": f"Delayed (15m {exch} Feed)",
-            "exchange": exch,
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    # 3. Cryptocurrencies (Binance, Coinbase, Kraken, Bitstamp, Spot Pairs, Natural names)
-    KNOWN_CRYPTO_PREFIXES = (
-        "BINANCE:", "COINBASE:", "BYBIT:", "KRAKEN:", "BITSTAMP:", "OKX:", "KUCOIN:",
-        "GATEIO:", "MEXC:", "BITGET:", "INDEX:", "CRYPTO:", "GEMINI:", "BITFINEX:",
-        "HUOBI:", "HTX:", "DERIBIT:"
-    )
-    crypto_clean = clean
-    for prefix in KNOWN_CRYPTO_PREFIXES:
-        if crypto_clean.startswith(prefix):
-            crypto_clean = crypto_clean[len(prefix):].strip()
-            break
-
-    # Handle natural crypto names
-    if crypto_clean in ("BITCOIN", "BITCOIN / DOLLAR", "BITCOIN/DOLLAR", "BTC"):
-        crypto_clean = "BTCUSD"
-    elif crypto_clean in ("ETHEREUM", "ETHEREUM / DOLLAR", "ETHEREUM/DOLLAR", "ETH"):
-        crypto_clean = "ETHUSD"
-    elif crypto_clean in ("SOLANA", "SOLANA / DOLLAR", "SOLANA/DOLLAR", "SOL"):
-        crypto_clean = "SOLUSD"
-
-    # Normalize slashes and spaces (e.g. BTC/USD -> BTCUSD, BTC / USD -> BTCUSD)
-    crypto_normalized = crypto_clean.replace("/", "").replace(" ", "").replace("_", "")
-
-    if crypto_normalized in ("BTCUSD", "BTC-USD", "XBTUSD") or crypto_normalized.startswith("BTCUSDT"):
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": "BTC-USD",
-            "market": "CRYPTO",
-            "asset_class": "crypto",
-            "display_name": "BTC-USD",
-            "source_label": "Live 24/7 Spot",
-            "exchange": "CRYPTO",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    if crypto_normalized in ("ETHUSD", "ETH-USD") or crypto_normalized.startswith("ETHUSDT"):
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": "ETH-USD",
-            "market": "CRYPTO",
-            "asset_class": "crypto",
-            "display_name": "ETH-USD",
-            "source_label": "Live 24/7 Spot",
-            "exchange": "CRYPTO",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    if crypto_normalized in ("SOLUSD", "SOL-USD") or crypto_normalized.startswith("SOLUSDT"):
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": "SOL-USD",
-            "market": "CRYPTO",
-            "asset_class": "crypto",
-            "display_name": "SOL-USD",
-            "source_label": "Live 24/7 Spot",
-            "exchange": "CRYPTO",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    if crypto_normalized.endswith("USDT") and len(crypto_normalized) > 4:
-        mapped = crypto_normalized[:-4] + "-USD"
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": mapped,
-            "market": "CRYPTO",
-            "asset_class": "crypto",
-            "display_name": mapped,
-            "source_label": "Live 24/7 Spot",
-            "exchange": "CRYPTO",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    if crypto_normalized.endswith("USD") and len(crypto_normalized) > 3 and not crypto_normalized.startswith("^"):
-        mapped = crypto_normalized[:-3] + "-USD"
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": mapped,
-            "market": "CRYPTO",
-            "asset_class": "crypto",
-            "display_name": mapped,
-            "source_label": "Live 24/7 Spot",
-            "exchange": "CRYPTO",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    if "-" in crypto_clean and crypto_clean.split("-")[1] in ("USD", "USDT", "INR", "EUR", "BUSD"):
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": crypto_clean,
-            "market": "CRYPTO",
-            "asset_class": "crypto",
-            "display_name": crypto_clean,
-            "source_label": "Live 24/7 Spot",
-            "exchange": "CRYPTO",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    # 4. US Equities
-    us_clean = clean
-    for prefix in ("NASDAQ:", "NYSE:", "AMEX:"):
-        if us_clean.startswith(prefix):
-            us_clean = us_clean[len(prefix):].strip()
-            break
-    if us_clean in ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "SPY", "QQQ"):
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": us_clean,
-            "market": "US",
-            "asset_class": "equity_us",
-            "display_name": us_clean,
-            "source_label": "Live / Delayed US Feed",
-            "exchange": "US",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    # 5. Known Indian Equities without prefix
-    COMMON_NSE_TICKERS = {
-        "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "BHARTIARTL",
-        "ITC", "LT", "TATAMOTORS", "HINDUNILVR", "AXISBANK", "KOTAKBANK",
-        "WIPRO", "MARUTI", "BAJFINANCE", "ASIANPAINT", "TITAN", "NIFTYBEES"
-    }
-    if clean in COMMON_NSE_TICKERS:
-        return {
-            "supported": True,
-            "original_symbol": raw_symbol,
-            "mapped_symbol": f"{clean}.NS" if not clean.endswith(".NS") else clean,
-            "market": "NSE",
-            "asset_class": "equity_in",
-            "display_name": clean.replace(".NS", ""),
-            "source_label": "Delayed (15m NSE Feed)",
-            "exchange": "NSE",
-            "is_proxy": False,
-            "proxy_target": None,
-            "proxy_notice": None,
-        }
-
-    # 6. Unsupported / Unmapped Symbol
-    return {
-        "supported": False,
-        "original_symbol": raw_symbol,
-        "mapped_symbol": None,
-        "market": market or "UNKNOWN",
-        "asset_class": "unknown",
-        "display_name": raw_symbol,
-        "source_label": "Unsupported Feed",
-        "is_proxy": False,
-        "proxy_target": None,
-        "proxy_notice": None,
-        "reason": f"UNSUPPORTED SYMBOL: '{raw_symbol}' has no verified market data feed mapping.",
-    }
+    """Normalizes raw ticker symbols from TradingView or user inputs to contract-aware provider symbols."""
+    info = resolve_instrument_info(raw_symbol, market=market)
+    return info.to_dict()
 
 
 class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -461,9 +269,14 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=web_dir, **kwargs)
 
     def _send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin")
+        if origin and (origin.startswith("chrome-extension://") or "tradingview.com" in origin or origin in ("http://127.0.0.1:8765", "http://localhost:8765")):
+            self.send_header("Access-Control-Allow-Origin", origin)
+        else:
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def _send_json_response(self, data: Any, status: int = 200) -> None:
         try:
@@ -498,6 +311,7 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Handle CORS preflight requests."""
         self.send_response(204)
         self._send_cors_headers()
+        self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -511,6 +325,8 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/status":
             self.handle_get_status()
+        elif path == "/api/diagnostics":
+            self.handle_get_diagnostics()
         elif path == "/api/health":
             self.handle_get_health()
         elif path == "/api/config":
@@ -601,7 +417,15 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             "max_open_exposure": SERVER_STATE.user_config.max_open_exposure,
             "current_open_exposure": SERVER_STATE.paper_engine.get_current_open_exposure(),
             "stats": state_snapshot.get("stats", {}),
+            "signal_diagnostics": SERVER_STATE.signal_diagnostics.to_dict(),
+            "diagnostics": SERVER_STATE.signal_diagnostics.to_dict(),
+            "reentry_cooldown_sec": SERVER_STATE.user_config.reentry_cooldown_sec,
+            "max_positions_per_instrument": SERVER_STATE.user_config.max_positions_per_instrument,
         })
+
+    def handle_get_diagnostics(self) -> None:
+        global SERVER_STATE
+        self._send_json_response(SERVER_STATE.signal_diagnostics.to_dict())
 
     def handle_get_health(self) -> None:
         self._send_json_response({
@@ -654,7 +478,7 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_post_active_context(self, payload: Dict[str, Any]) -> None:
         global SERVER_STATE
-        raw_symbol = str(payload.get("symbol", "")).strip()
+        raw_symbol = str(payload.get("raw_symbol") or payload.get("symbol") or "").strip()
         raw_interval = str(payload.get("interval", "15m")).strip().lower()
         unverified = bool(payload.get("unverified", False))
         reason = payload.get("reason")
@@ -682,12 +506,16 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         sym_info = normalize_market_symbol(raw_symbol)
         if not sym_info.get("supported"):
             reason_msg = sym_info.get("reason", f"Unsupported symbol: {raw_symbol}")
+            status_code = sym_info.get("status", "UNSUPPORTED_INSTRUMENT")
             SERVER_STATE.active_context = {
                 "symbol": raw_symbol,
                 "raw_symbol": raw_symbol,
+                "tradingview_symbol": sym_info.get("tradingview_symbol", raw_symbol),
+                "canonical_id": sym_info.get("canonical_id", "UNKNOWN"),
+                "instrument_type": sym_info.get("instrument_type", "unknown"),
                 "interval": raw_interval,
                 "source": source,
-                "status": "UNSUPPORTED_INSTRUMENT",
+                "status": status_code,
                 "unverified": True,
                 "reason": reason_msg,
                 "updated_at": time.time(),
@@ -700,8 +528,14 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         SERVER_STATE.active_context = {
             "symbol": sym_info["mapped_symbol"],
             "raw_symbol": raw_symbol,
+            "tradingview_symbol": sym_info.get("tradingview_symbol", raw_symbol),
+            "canonical_id": sym_info.get("canonical_id"),
             "display_name": sym_info.get("display_name", raw_symbol),
             "market": sym_info.get("market", "NSE"),
+            "exchange": sym_info.get("exchange", "NSE"),
+            "instrument_type": sym_info.get("instrument_type", "spot"),
+            "contract_denomination": sym_info.get("contract_denomination", "USD"),
+            "settlement_currency": sym_info.get("settlement_currency", "USD"),
             "interval": raw_interval,
             "source": source,
             "status": "SYNCHRONIZED",
@@ -886,6 +720,8 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
         sym_info = normalize_market_symbol(raw_symbol, market=market_param)
         if not sym_info["supported"]:
             reason_msg = sym_info.get("reason", f"Unsupported symbol: {raw_symbol}")
+            SERVER_STATE.signal_diagnostics.record_evaluation("NO_TRADE")
+            SERVER_STATE.signal_diagnostics.record_rejection(reason_msg, symbol=raw_symbol)
             self._send_json_response({
                 "error": reason_msg,
                 "symbol": raw_symbol,
@@ -1031,60 +867,124 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
             user_config=SERVER_STATE.user_config,
         )
 
+        strat_name = analysis.get("selected_strategy", "Unknown")
+        decision = analysis.get("decision", "NO TRADE")
+        SERVER_STATE.signal_diagnostics.record_evaluation(decision, strategy=strat_name)
+
         if is_stale and stale_msg:
             analysis["decision"] = "NO TRADE"
             analysis["ticket"] = None
             analysis.setdefault("reasons", []).insert(0, stale_msg)
+
+        # Attach contract and context awareness to ticket if present
+        ticket_data = analysis.get("ticket")
+        if ticket_data:
+            ticket_data["tradingview_symbol"] = sym_info.get("tradingview_symbol", raw_symbol)
+            ticket_data["canonical_id"] = sym_info.get("canonical_id")
+            ticket_data["instrument_type"] = sym_info.get("instrument_type", "spot")
+            ticket_data["data_provider"] = sym_info.get("source_label") or sym_info.get("provider_name")
+            ticket_data["timeframe"] = interval
+            ticket_data["candle_timestamp"] = latest_bar.get("timestamp")
+            ticket_data["strategy_id"] = strat_name
+            if analysis.get("decision") == "TRADE":
+                SERVER_STATE.signal_diagnostics.record_risk_approval()
 
         # Automatic paper execution check
         auto_exec_cfg = SERVER_STATE.user_config.auto_execute_paper
         if "auto_execute" in payload:
             auto_exec_cfg = bool(payload["auto_execute"])
 
-        strat_name = analysis.get("selected_strategy", "Unknown")
         candle_sig = (mapped_symbol, interval, latest_bar.get("timestamp"), strat_name)
+        is_fallback_data = bool(health_info and health_info.get("is_fallback"))
 
-        if is_stale and stale_msg:
+        if not auto_exec_cfg:
+            analysis["auto_execution"] = {
+                "enabled": False,
+                "executed": False,
+                "status": "MANUAL_APPROVAL_REQUIRED",
+                "reason": "Auto Paper Execution disabled. Manual approval required.",
+            }
+        elif is_fallback_data:
+            fallback_reason = "CACHED FALLBACK: Fallback fixtures cannot generate executable paper trades."
+            SERVER_STATE.signal_diagnostics.record_rejection(fallback_reason, symbol=mapped_symbol)
+            analysis["auto_execution"] = {
+                "enabled": auto_exec_cfg,
+                "executed": False,
+                "reason": fallback_reason,
+            }
+        elif is_stale and stale_msg:
+            SERVER_STATE.signal_diagnostics.record_rejection(stale_msg, symbol=mapped_symbol)
             analysis["auto_execution"] = {
                 "enabled": auto_exec_cfg,
                 "executed": False,
                 "reason": stale_msg,
             }
         elif SERVER_STATE.user_config.emergency_stop or SERVER_STATE.broker.emergency_halted:
+            rejection_reason = "Emergency stop is active. Automated trading is halted."
+            SERVER_STATE.signal_diagnostics.record_rejection(rejection_reason, symbol=mapped_symbol)
             analysis["auto_execution"] = {
                 "enabled": auto_exec_cfg,
                 "executed": False,
-                "reason": "Emergency stop is active. Automated trading is halted.",
+                "reason": rejection_reason,
             }
         elif SERVER_STATE.user_config.new_entries_paused:
+            rejection_reason = "New trade entries are currently PAUSED by user."
+            SERVER_STATE.signal_diagnostics.record_rejection(rejection_reason, symbol=mapped_symbol)
             analysis["auto_execution"] = {
                 "enabled": auto_exec_cfg,
                 "executed": False,
-                "reason": "New trade entries are currently PAUSED by user.",
-            }
-        elif mapped_symbol in SERVER_STATE.paper_engine.positions:
-            analysis["auto_execution"] = {
-                "enabled": auto_exec_cfg,
-                "executed": False,
-                "reason": f"Position already open for {mapped_symbol}. Duplicate entries prevented.",
+                "reason": rejection_reason,
             }
         elif SERVER_STATE.last_executed_signals.get(mapped_symbol) == latest_bar.get("timestamp") or candle_sig in SERVER_STATE.last_executed_signals:
+            rejection_reason = f"Duplicate signal already executed for candle timestamp {latest_bar.get('timestamp')}."
+            SERVER_STATE.signal_diagnostics.record_rejection(rejection_reason, symbol=mapped_symbol)
             analysis["auto_execution"] = {
                 "enabled": auto_exec_cfg,
                 "executed": False,
-                "reason": f"Duplicate signal already executed for candle timestamp {latest_bar.get('timestamp')}.",
+                "reason": rejection_reason,
+            }
+        elif mapped_symbol in SERVER_STATE.paper_engine.positions:
+            rejection_reason = f"MAX POSITIONS REACHED: active position already open for {mapped_symbol}."
+            SERVER_STATE.signal_diagnostics.record_rejection(rejection_reason, symbol=mapped_symbol)
+            analysis["auto_execution"] = {
+                "enabled": auto_exec_cfg,
+                "executed": False,
+                "reason": rejection_reason,
+            }
+        elif (now_ts - SERVER_STATE.last_trade_times.get(mapped_symbol, 0)) < SERVER_STATE.user_config.reentry_cooldown_sec:
+            rem_sec = int(SERVER_STATE.user_config.reentry_cooldown_sec - (now_ts - SERVER_STATE.last_trade_times.get(mapped_symbol, 0)))
+            rejection_reason = f"RE-ENTRY COOLDOWN ACTIVE: {rem_sec}s remaining for {mapped_symbol}."
+            SERVER_STATE.signal_diagnostics.record_rejection(rejection_reason, symbol=mapped_symbol)
+            analysis["auto_execution"] = {
+                "enabled": auto_exec_cfg,
+                "executed": False,
+                "reason": rejection_reason,
             }
         else:
             is_trade = analysis.get("decision") == "TRADE"
-            ticket_data = analysis.get("ticket")
 
             if is_trade and ticket_data:
-                if auto_exec_cfg:
+                # Cross-instrument check against active context
+                active_raw = SERVER_STATE.active_context.get("raw_symbol")
+                active_mapped = SERVER_STATE.active_context.get("symbol")
+                if SERVER_STATE.active_context.get("synced") and active_raw and (raw_symbol != active_raw and mapped_symbol != active_mapped):
+                    rejection_reason = f"CONTEXT MISMATCH: analyzed symbol {raw_symbol} does not match active chart context {active_raw}."
+                    SERVER_STATE.signal_diagnostics.record_rejection(rejection_reason, symbol=mapped_symbol)
+                    analysis["auto_execution"] = {
+                        "enabled": auto_exec_cfg,
+                        "executed": False,
+                        "reason": rejection_reason,
+                    }
+                else:
                     ticket_obj = OrderTicket.from_dict(ticket_data)
                     order_res = SERVER_STATE.broker.place_order(ticket_obj, confirm_live=False)
                     if order_res.get("success"):
                         SERVER_STATE.last_executed_signals[mapped_symbol] = latest_bar.get("timestamp")
                         SERVER_STATE.last_executed_signals[candle_sig] = order_res.get("order_id")
+                        SERVER_STATE.last_trade_times[mapped_symbol] = now_ts
+                        SERVER_STATE.signal_diagnostics.record_execution(
+                            order_res.get("order_id"), mapped_symbol, order_res.get("fill_price", 0.0)
+                        )
                         analysis["auto_execution"] = {
                             "enabled": True,
                             "executed": True,
@@ -1101,25 +1001,22 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
                             "fill_price": order_res.get("fill_price"),
                         })
                     else:
+                        rejection_reason = order_res.get("reason", "Order rejected by risk gates.")
+                        SERVER_STATE.signal_diagnostics.record_rejection(rejection_reason, symbol=mapped_symbol)
                         analysis["auto_execution"] = {
                             "enabled": True,
                             "executed": False,
-                            "reason": order_res.get("reason", "Order rejected by risk gates."),
+                            "reason": rejection_reason,
                             "violations": order_res.get("violations", []),
                         }
-                else:
-                    analysis["auto_execution"] = {
-                        "enabled": False,
-                        "executed": False,
-                        "status": "MANUAL_APPROVAL_REQUIRED",
-                        "reason": "Auto Paper Execution disabled. Manual approval required.",
-                    }
             else:
+                reasons_list = analysis.get("reasons") or []
+                no_setup_reason = reasons_list[0] if reasons_list else "No trade setup."
                 analysis["auto_execution"] = {
                     "enabled": auto_exec_cfg,
                     "executed": False,
                     "status": "NO_TRADE_SETUP",
-                    "reason": (analysis.get("reasons") and analysis["reasons"][0]) or "No trade setup.",
+                    "reason": no_setup_reason,
                 }
 
         feed_label = health_info.get("provider", source_label)
@@ -1179,17 +1076,87 @@ class CopilotRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         ticket = OrderTicket.from_dict(ticket_data)
 
-        # Stale data safety check: if cached market data for this symbol is explicitly stale, block new paper orders
-        health = SERVER_STATE.market_data.get_data_health(ticket.symbol, "15m") if hasattr(SERVER_STATE.market_data, "get_data_health") else None
-        if health and health.get("candle_count", 0) > 0 and health.get("is_stale"):
-            self._send_json_response({
-                "success": False,
-                "reason": f"Stale market data detected ({health.get('status')}, age {health.get('data_age_sec', 0)}s). Orders blocked until fresh data arrives.",
-                "status": "STALE_DATA"
-            }, status=400)
+        # Context freshness and cross-instrument verification
+        now_ts = time.time()
+        ctx = getattr(SERVER_STATE, "active_context", {}) or {}
+        if ctx.get("synced"):
+            updated_at = ctx.get("updated_at", 0.0)
+            if updated_at > 0 and (now_ts - updated_at) > 60:
+                ctx["synced"] = False
+                ctx["status"] = "CONTEXT_EXPIRED"
+                reason = "ACTIVE CONTEXT EXPIRED: TradingView context older than 60 seconds."
+                SERVER_STATE.signal_diagnostics.record_rejection(reason, symbol=ticket.symbol)
+                self._send_json_response({"success": False, "reason": reason, "status": "CONTEXT_EXPIRED"}, status=400)
+                return
+
+            active_raw = ctx.get("raw_symbol")
+            active_mapped = ctx.get("symbol")
+            active_canon = ctx.get("canonical_id")
+            ticket_tv = ticket.tradingview_symbol
+            ticket_sym = ticket.symbol
+            ticket_canon = ticket.canonical_id
+
+            is_match = False
+            if ticket_tv and active_raw and (ticket_tv.upper() == active_raw.upper() or ticket_tv.upper().replace("DELTA:", "") == active_raw.upper().replace("DELTA:", "")):
+                is_match = True
+            elif ticket_sym and active_mapped and (ticket_sym.upper() == active_mapped.upper()):
+                is_match = True
+            elif ticket_canon and active_canon and (ticket_canon.upper() == active_canon.upper()):
+                is_match = True
+
+            if not is_match and active_raw:
+                reason = f"CONTEXT MISMATCH: order instrument {ticket_tv or ticket_sym} does not match active chart context {active_raw}."
+                SERVER_STATE.signal_diagnostics.record_rejection(reason, symbol=ticket.symbol)
+                self._send_json_response({"success": False, "reason": reason, "status": "CONTEXT_MISMATCH"}, status=400)
+                return
+
+        # Re-entry cooldown check
+        last_trade = SERVER_STATE.last_trade_times.get(ticket.symbol, 0)
+        cooldown = SERVER_STATE.user_config.reentry_cooldown_sec
+        if (now_ts - last_trade) < cooldown:
+            rem = int(cooldown - (now_ts - last_trade))
+            reason = f"RE-ENTRY COOLDOWN ACTIVE: {rem}s remaining for {ticket.symbol}"
+            SERVER_STATE.signal_diagnostics.record_rejection(reason, symbol=ticket.symbol)
+            self._send_json_response({"success": False, "reason": reason, "status": "COOLDOWN_ACTIVE"}, status=400)
             return
 
+        # Max positions per instrument check
+        if ticket.symbol in SERVER_STATE.paper_engine.positions:
+            reason = f"MAX POSITIONS REACHED: active position already open for {ticket.symbol}"
+            SERVER_STATE.signal_diagnostics.record_rejection(reason, symbol=ticket.symbol)
+            self._send_json_response({"success": False, "reason": reason, "status": "MAX_POSITIONS_REACHED"}, status=400)
+            return
+
+        # Stale data safety check: if cached market data for this symbol is explicitly stale or fallback, block new paper orders
+        health = SERVER_STATE.market_data.get_data_health(ticket.symbol, "15m") if hasattr(SERVER_STATE.market_data, "get_data_health") else None
+        if health and health.get("candle_count", 0) > 0:
+            if health.get("is_fallback"):
+                reason = f"Cached fallback market data detected ({health.get('status')}). Orders blocked until fresh data arrives."
+                SERVER_STATE.signal_diagnostics.record_rejection(reason, symbol=ticket.symbol)
+                self._send_json_response({
+                    "success": False,
+                    "reason": reason,
+                    "status": "CACHED_FALLBACK"
+                }, status=400)
+                return
+            if health.get("is_stale"):
+                reason = f"Stale market data detected ({health.get('status')}, age {health.get('data_age_sec', 0)}s). Orders blocked until fresh data arrives."
+                SERVER_STATE.signal_diagnostics.record_rejection(reason, symbol=ticket.symbol)
+                self._send_json_response({
+                    "success": False,
+                    "reason": reason,
+                    "status": "STALE_DATA"
+                }, status=400)
+                return
+
         result = SERVER_STATE.broker.place_order(ticket, confirm_live=confirm_live)
+        if result.get("success"):
+            SERVER_STATE.last_trade_times[ticket.symbol] = now_ts
+            SERVER_STATE.signal_diagnostics.record_execution(
+                result.get("order_id", ""), ticket.symbol, result.get("fill_price", 0.0)
+            )
+        else:
+            SERVER_STATE.signal_diagnostics.record_rejection(result.get("reason", "Order rejected by risk gates."), symbol=ticket.symbol)
         self._send_json_response(result)
 
     def handle_get_positions(self) -> None:

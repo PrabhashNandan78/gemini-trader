@@ -153,6 +153,42 @@
           </div>
         </div>
       </div>
+
+      <!-- SIGNAL & EXECUTION DIAGNOSTICS CARD -->
+      <div class="card diagnostics-card" style="margin-top: 15px;">
+        <div class="card-header">
+          <h3>Signal & Execution Diagnostics</h3>
+          <span class="badge" id="diagLastEval" style="font-size: 11px;">Idle</span>
+        </div>
+        <div class="card-body">
+          <div class="diag-grid">
+            <div class="diag-item">
+              <span class="diag-label">SIGNALS EVALUATED</span>
+              <span class="diag-val" id="diagSignalsEvaluated">0</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">BUY / SELL / NO TRADE</span>
+              <span class="diag-val" id="diagSignalDecisions">0 / 0 / 0</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">RISK APPROVED</span>
+              <span class="diag-val text-success" id="diagRiskApproved">0</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">EXECUTED ORDERS</span>
+              <span class="diag-val text-accent" id="diagExecutedOrders">0</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">REJECTED ORDERS</span>
+              <span class="diag-val text-warning" id="diagRejectedOrders">0</span>
+            </div>
+          </div>
+          <div class="diag-reason-box" id="diagReasonBox">
+            <span class="diag-reason-label">Most Recent Rejection Reason:</span>
+            <p class="diag-reason-text" id="diagRecentRejection">None</p>
+          </div>
+        </div>
+      </div>
     </aside>
 
     <!-- CENTER & RIGHT: INDEPENDENT CHART & TRADE LOGS -->
@@ -189,6 +225,10 @@
             <span class="health-badge status-live" id="healthStatusBadge">LIVE</span>
           </div>
           <div class="health-item">
+            <span class="health-label">TYPE:</span>
+            <span class="health-badge" id="healthTypeBadge" style="background: rgba(167, 139, 250, 0.15); color: #c4b5fd;">SPOT</span>
+          </div>
+          <div class="health-item">
             <span class="health-label">INSTRUMENT:</span>
             <span class="health-val" id="healthInstrumentVal">BTC-USD</span>
           </div>
@@ -205,8 +245,12 @@
             <span class="health-val" id="healthUpdateVal">--</span>
           </div>
           <div class="health-item">
-            <span class="health-label">AGE:</span>
+            <span class="health-label">DATA AGE:</span>
             <span class="health-val" id="healthAgeVal">0s</span>
+          </div>
+          <div class="health-item">
+            <span class="health-label">CANDLE AGE:</span>
+            <span class="health-val" id="healthCandleAgeVal">0s</span>
           </div>
           <div class="health-item">
             <span class="health-label">CANDLES:</span>

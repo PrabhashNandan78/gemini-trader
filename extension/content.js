@@ -571,31 +571,58 @@
   }
 
   // ---------------------------------------------------------------- Backend Communication
-  async function apiCall(endpoint, method = 'GET', body = null) {
+  async function apiCall(endpoint, method = 'GET', body = null, timeout = 8000) {
     if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
-      return directFetch(endpoint, method, body);
+      const err = new Error('Extension runtime unavailable. Refresh TradingView page.');
+      err.errorType = 'SERVICE_WORKER_UNAVAILABLE';
+      err.status = 503;
+      throw err;
     }
-    // Attempt 1: Through background service worker proxy
+
     return new Promise((resolve, reject) => {
       try {
         chrome.runtime.sendMessage(
-          { action: 'COPILOT_API_REQUEST', endpoint: endpoint, method: method, body: body },
+          { action: 'COPILOT_API_REQUEST', endpoint: endpoint, method: method, body: body, timeout: timeout },
           (response) => {
-            if (chrome.runtime.lastError || !response) {
-              // Fallback to direct fetch
-              directFetch(endpoint, method, body).then(resolve).catch(reject);
-            } else if (!response.success) {
-              const err = new Error(response.error || 'API Request failed');
+            if (chrome.runtime.lastError) {
+              const lastErrMsg = chrome.runtime.lastError.message || '';
+              const isInvalidated = lastErrMsg.includes('invalidated') || lastErrMsg.includes('Receiving end does not exist');
+              const err = new Error(
+                isInvalidated
+                  ? 'Service worker unavailable: Extension reloaded. Refresh TradingView tab to reconnect.'
+                  : `Extension message error: ${lastErrMsg}`
+              );
+              err.errorType = 'SERVICE_WORKER_UNAVAILABLE';
+              err.status = 503;
+              reject(err);
+              return;
+            }
+
+            if (!response) {
+              const err = new Error('No response from extension background service worker.');
+              err.errorType = 'SERVICE_WORKER_UNAVAILABLE';
+              err.status = 503;
+              reject(err);
+              return;
+            }
+
+            if (!response.success) {
+              const err = new Error(response.error || 'Backend communication error');
               err.status = response.status || null;
+              err.errorType = response.errorType || 'HTTP_ERROR';
               err.data = response.data || null;
               reject(err);
-            } else {
-              resolve(response.data);
+              return;
             }
+
+            resolve(response.data);
           }
         );
-      } catch (err) {
-        directFetch(endpoint, method, body).then(resolve).catch(reject);
+      } catch (sendErr) {
+        const err = new Error('Failed to send message to service worker: ' + sendErr.message);
+        err.errorType = 'SERVICE_WORKER_UNAVAILABLE';
+        err.status = 503;
+        reject(err);
       }
     });
   }
@@ -622,44 +649,66 @@
   }
 
   // ---------------------------------------------------------------- Analysis Workflow
-  async function syncWithPageContext() {
-    const ctx = detectTradingViewContext();
-    STATE.symbol = ctx.symbol;
-    STATE.interval = ctx.interval;
-    STATE.unverified = !!ctx.unverified;
-    STATE.unverifiedReason = ctx.reason || null;
+  let lastAnnouncedKey = null;
+  let lastAnnounceTime = 0;
+  let isSyncingContext = false;
 
-    const symEl = document.getElementById('tvSymbolVal');
-    const intervalSelect = document.getElementById('tvIntervalSelect');
-    if (symEl) symEl.textContent = STATE.symbol;
-    if (intervalSelect) intervalSelect.value = STATE.interval;
-
-    // Announce active context to Copilot backend for dashboard synchronization
-    try {
-      await apiCall('/active_context', 'POST', {
-        symbol: ctx.symbol,
-        interval: ctx.interval,
-        source: 'tradingview',
-        unverified: !!ctx.unverified,
-        reason: ctx.reason || null
-      });
-    } catch (e) {
-      console.warn('[Copilot] Failed to announce active context to backend:', e);
-    }
+  async function syncWithPageContext(force = false) {
+    if (isSyncingContext) return;
+    isSyncingContext = true;
 
     try {
-      const statusRes = await apiCall('/status', 'GET');
-      if (statusRes && statusRes.config) {
-        STATE.autoExecutePaper = !!statusRes.config.auto_execute_paper;
-        STATE.newEntriesPaused = !!statusRes.config.new_entries_paused;
-        const checkAutoPaper = document.getElementById('tvCheckAutoPaper');
-        if (checkAutoPaper) checkAutoPaper.checked = STATE.autoExecutePaper;
-        const btnPause = document.getElementById('tvBtnPauseEntries');
-        if (btnPause) updatePauseButtonState(btnPause, STATE.newEntriesPaused);
+      const ctx = detectTradingViewContext();
+      STATE.symbol = ctx.symbol;
+      STATE.interval = ctx.interval;
+      STATE.unverified = !!ctx.unverified;
+      STATE.unverifiedReason = ctx.reason || null;
+
+      const symEl = document.getElementById('tvSymbolVal');
+      const intervalSelect = document.getElementById('tvIntervalSelect');
+      if (symEl) symEl.textContent = STATE.symbol;
+      if (intervalSelect) intervalSelect.value = STATE.interval;
+
+      // Deduplicate active context announcements to avoid duplicate POSTs
+      const currentKey = `${ctx.symbol}|${ctx.interval}|${!!ctx.unverified}|${ctx.reason || ''}`;
+      const now = Date.now();
+      const shouldAnnounce = force || (currentKey !== lastAnnouncedKey) || (now - lastAnnounceTime > 25000);
+
+      if (shouldAnnounce && ctx.symbol && ctx.symbol !== 'UNVERIFIED') {
+        lastAnnouncedKey = currentKey;
+        lastAnnounceTime = now;
+        try {
+          await apiCall('/active_context', 'POST', {
+            raw_symbol: ctx.symbol,
+            symbol: ctx.symbol,
+            interval: ctx.interval,
+            source: 'tradingview',
+            unverified: !!ctx.unverified,
+            reason: ctx.reason || null
+          });
+        } catch (e) {
+          if (e.status !== 400 && e.status !== 404) {
+            console.warn(`[Copilot] Active context announcement: ${e.errorType || 'ERROR'} - ${e.message}`);
+          }
+        }
       }
-    } catch (_) {}
 
-    await runAnalysis();
+      try {
+        const statusRes = await apiCall('/status', 'GET');
+        if (statusRes && statusRes.config) {
+          STATE.autoExecutePaper = !!statusRes.config.auto_execute_paper;
+          STATE.newEntriesPaused = !!statusRes.config.new_entries_paused;
+          const checkAutoPaper = document.getElementById('tvCheckAutoPaper');
+          if (checkAutoPaper) checkAutoPaper.checked = STATE.autoExecutePaper;
+          const btnPause = document.getElementById('tvBtnPauseEntries');
+          if (btnPause) updatePauseButtonState(btnPause, STATE.newEntriesPaused);
+        }
+      } catch (_) {}
+
+      await runAnalysis();
+    } finally {
+      isSyncingContext = false;
+    }
   }
 
   async function runAnalysis(isBackground = false) {
@@ -714,8 +763,8 @@
 
       syncActivePositions();
     } catch (err) {
-      const hasHttpStatus = err && (typeof err.status === 'number' || (err.data && err.data.status));
-      if (hasHttpStatus) {
+      const isHttpAppError = err && (err.status === 400 || err.status === 404 || err.status === 422 || (err.data && (err.data.status || err.data.analysis)));
+      if (isHttpAppError) {
         // Backend is online and answered with structured response (e.g. 400 for unsupported ticker)
         STATE.connected = true;
         if (dot) dot.className = 'tv-copilot-status-dot online';
@@ -727,14 +776,24 @@
                                 'Unsupported market instrument';
         renderNoTradeState(rejectionReason);
       } else {
-        // Actual network/fetch failure to local backend
+        // Connection, service worker, or network failure
         STATE.connected = false;
         if (dot) dot.className = 'tv-copilot-status-dot offline';
         if (alertBox) {
           alertBox.classList.add('visible');
-          alertText.textContent = err.message || 'Cannot connect to 127.0.0.1:8765';
+          if (err.errorType === 'CONNECTION_REFUSED' || (err.status === 503 && !err.data)) {
+            alertText.textContent = 'Backend Offline: Copilot server is not running on 127.0.0.1:8765. Start: python -m copilot.server';
+          } else if (err.errorType === 'SERVICE_WORKER_UNAVAILABLE') {
+            alertText.textContent = 'Service Worker Inactive: Extension reloaded. Refresh TradingView tab to reconnect.';
+          } else if (err.errorType === 'TIMEOUT') {
+            alertText.textContent = 'Backend Timeout: Request to 127.0.0.1:8765 timed out.';
+          } else if (err.status >= 500) {
+            alertText.textContent = `Backend Server Error (HTTP ${err.status}): ${err.message}`;
+          } else {
+            alertText.textContent = err.message || 'Cannot connect to 127.0.0.1:8765';
+          }
         }
-        renderErrorState(err.message);
+        renderErrorState(err.message || 'Backend offline on 127.0.0.1:8765');
       }
     } finally {
       if (!isBackground && btnRefresh) {

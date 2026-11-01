@@ -107,10 +107,24 @@ class PaperTradingEngine:
             "trade_history": self.trade_history,
             "stats": self.stats,
         }
-        temp_path = f"{self.state_file_path}.tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(state_data, f, indent=2)
-        os.replace(temp_path, self.state_file_path)
+        temp_path = f"{self.state_file_path}.{os.getpid()}_{time.time_ns()}.tmp"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(state_data, f, indent=2)
+            for attempt in range(5):
+                try:
+                    os.replace(temp_path, self.state_file_path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.05)
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
 
     def load_state(self) -> bool:
         """Load state from persistent file."""
