@@ -10,7 +10,7 @@ Enforces calculation of net profit, net risk, and net reward-to-risk ratios.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 
 @dataclass
