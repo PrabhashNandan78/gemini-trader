@@ -1,0 +1,7 @@
+# gemini-trader has NO third-party Python dependencies.
+# All modules (copilot/, engine/, trader-*/ skills, run_trader.py) use only the
+# Python 3.10+ standard library (urllib is used for HTTP to free public data
+# sources). This file is kept so tooling and CI have a stable install step:
+#   pip install -r requirements.txt   # installs nothing
+# Optional external tool: `pdftotext` (poppler) is used by trader-pelosi/ptr.py
+# only when parsing House PTR PDFs into text first.
