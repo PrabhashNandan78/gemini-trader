@@ -21,6 +21,24 @@ an order on its own. Paper trading is the default.
 > [github.com/Jakeschincariol/trader-skill](https://github.com/Jakeschincariol/trader-skill).
 > This repo is its day-trading sequel: the Trader skill v2.
 
+## Provenance & Attribution
+
+This repository is a **Gemini adaptation of the open-source "Day Trader" skill pack by Jake Schincariol** ([upstream project](https://github.com/Jakeschincariol/day-trader-skill), MIT-licensed — see the credit line at the bottom of this README). The `trader-*` skill folders originate from that upstream project.
+
+The adaptation work in this repository is the Gemini integration layer: the `copilot/` package (paper-trading engine, risk engine, cost models for NSE/US/crypto, broker adapters for Zerodha and Alpaca via environment variables), `gemini_interface.py` / `gemini_tools.json` (Gemini function-calling declarations and dispatcher), `run_trader.py`, and the Chrome extension panel under `extension/`.
+
+Please credit the upstream author when reusing the skill pack itself.
+
+## Development
+
+The Python code uses **only the standard library** (Python 3.10+); there are no third-party packages to install. Broker credentials, when used, are read from environment variables — copy `.env.example` to `.env` and fill in your own values (never commit a real `.env`).
+
+Run the test suite (offline, fixture-based) with:
+
+```
+python -m unittest discover -s tests
+```
+
 ## Install
 
 Paste this into Claude:
