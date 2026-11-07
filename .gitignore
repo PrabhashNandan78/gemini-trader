@@ -13,3 +13,6 @@ trader/daily.json
 .pytest_cache/
 .DS_Store
 
+
+# Local secrets — never commit
+.env
